@@ -1,0 +1,17 @@
+# Byte-compiled / optimized files
+*.o
+
+# Go build cache
+bin/
+pkg/
+
+# Dependencies
+vendor/
+
+# IDE and editor files
+.idea/
+*.swp
+
+# Logs and temporary files
+*.log
+tmp/
