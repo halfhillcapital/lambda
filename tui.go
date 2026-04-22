@@ -1,0 +1,580 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+
+	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/textarea"
+	"github.com/charmbracelet/bubbles/viewport"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/glamour"
+	"github.com/charmbracelet/lipgloss"
+)
+
+var (
+	userStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("#87d7ff")).Bold(true)
+	assistantStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffffff"))
+	toolCallStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffaf5f"))
+	toolOutStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#8a8a8a"))
+	noticeStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#d7d787")).Italic(true)
+	errorStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#ff5f5f")).Bold(true)
+	statusStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#626262"))
+	modalBoxStyle  = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("#ffaf5f")).
+			Padding(0, 1)
+	diffAddStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#87ff87"))
+	diffDelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#ff5f5f"))
+)
+
+// --- messages / events plumbing ---
+
+type agentEventMsg struct{ ev Event }
+type askMsg struct{ req *confirmRequest }
+
+type confirmRequest struct {
+	name, args string
+	reply      chan Decision
+}
+
+// --- transcript blocks ---
+
+type blockKind int
+
+const (
+	blockUser blockKind = iota
+	blockAssistant
+	blockTool
+	blockNotice
+	blockError
+)
+
+type block struct {
+	kind  blockKind
+	text  string // accumulating text (assistant streaming, or full text for others)
+	final bool   // assistant: true once the model's message is complete
+	tool  string // tool name (blockTool)
+}
+
+// --- model ---
+
+type uiModel struct {
+	cfg     *Config
+	agent   *Agent
+	askCh   chan confirmRequest
+	eventCh chan Event
+
+	turnCtx    context.Context
+	turnCancel context.CancelFunc
+	turnActive bool
+	stepsUsed  int
+
+	viewport viewport.Model
+	input    textarea.Model
+	spinner  spinner.Model
+	renderer *glamour.TermRenderer
+
+	blocks []block
+
+	// confirmation modal
+	pendingAsk *confirmRequest
+
+	width, height int
+	errMsg        string
+}
+
+func newUIModel(cfg *Config, systemPrompt string) (*uiModel, error) {
+	m := &uiModel{
+		cfg:     cfg,
+		askCh:   make(chan confirmRequest, 1),
+		eventCh: make(chan Event, 128),
+	}
+	confirmer := func(ctx context.Context, name, args string) Decision {
+		reply := make(chan Decision, 1)
+		select {
+		case m.askCh <- confirmRequest{name, args, reply}:
+		case <-ctx.Done():
+			return DecisionDeny
+		}
+		select {
+		case d := <-reply:
+			return d
+		case <-ctx.Done():
+			return DecisionDeny
+		}
+	}
+	m.agent = NewAgent(cfg, systemPrompt, confirmer)
+
+	ta := textarea.New()
+	ta.Placeholder = "Ask anything — Enter to send, Ctrl+J for newline, Ctrl+C to quit"
+	ta.Prompt = "│ "
+	ta.ShowLineNumbers = false
+	ta.CharLimit = 0
+	ta.KeyMap.InsertNewline.SetEnabled(false)
+	ta.SetHeight(3)
+	ta.Focus()
+	m.input = ta
+
+	vp := viewport.New(80, 20)
+	vp.SetContent("")
+	m.viewport = vp
+
+	sp := spinner.New()
+	sp.Spinner = spinner.Dot
+	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffaf5f"))
+	m.spinner = sp
+
+	if err := m.rebuildRenderer(80); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+func (m *uiModel) rebuildRenderer(width int) error {
+	if width < 20 {
+		width = 20
+	}
+	r, err := glamour.NewTermRenderer(
+		glamour.WithAutoStyle(),
+		glamour.WithWordWrap(width-4),
+	)
+	if err != nil {
+		return err
+	}
+	m.renderer = r
+	return nil
+}
+
+func (m *uiModel) Init() tea.Cmd {
+	return tea.Batch(
+		textarea.Blink,
+		m.spinner.Tick,
+		m.waitForAsk(),
+		m.waitForEvent(),
+	)
+}
+
+func (m *uiModel) waitForAsk() tea.Cmd {
+	return func() tea.Msg {
+		req, ok := <-m.askCh
+		if !ok {
+			return nil
+		}
+		return askMsg{req: &req}
+	}
+}
+
+func (m *uiModel) waitForEvent() tea.Cmd {
+	return func() tea.Msg {
+		ev, ok := <-m.eventCh
+		if !ok {
+			return nil
+		}
+		return agentEventMsg{ev: ev}
+	}
+}
+
+func (m *uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmds []tea.Cmd
+
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width, m.height = msg.Width, msg.Height
+		_ = m.rebuildRenderer(msg.Width)
+		m.layout()
+		m.refreshViewport()
+		return m, nil
+
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		return m, cmd
+
+	case askMsg:
+		m.pendingAsk = msg.req
+		m.input.Blur()
+		return m, m.waitForAsk()
+
+	case agentEventMsg:
+		m.handleEvent(msg.ev)
+		cmds = append(cmds, m.waitForEvent())
+
+	case tea.KeyMsg:
+		if m.pendingAsk != nil {
+			return m, m.handleConfirmKey(msg)
+		}
+		switch msg.String() {
+		case "ctrl+c":
+			if m.turnActive {
+				m.turnCancel()
+				return m, nil
+			}
+			return m, tea.Quit
+		case "enter":
+			text := strings.TrimSpace(m.input.Value())
+			if text == "" || m.turnActive {
+				return m, nil
+			}
+			return m, m.startTurn(text)
+		case "ctrl+j":
+			m.input.InsertString("\n")
+			return m, nil
+		case "pgup":
+			m.viewport.ScrollUp(m.viewport.Height / 2)
+			return m, nil
+		case "pgdown":
+			m.viewport.ScrollDown(m.viewport.Height / 2)
+			return m, nil
+		}
+	}
+
+	var tcmd, vcmd tea.Cmd
+	m.input, tcmd = m.input.Update(msg)
+	m.viewport, vcmd = m.viewport.Update(msg)
+	cmds = append(cmds, tcmd, vcmd)
+	return m, tea.Batch(cmds...)
+}
+
+func (m *uiModel) handleConfirmKey(msg tea.KeyMsg) tea.Cmd {
+	k := msg.String()
+	var d Decision
+	switch k {
+	case "y", "Y", "enter":
+		d = DecisionAllow
+	case "a":
+		d = DecisionAlwaysTool
+	case "A":
+		d = DecisionAlwaysAll
+	case "n", "N", "esc", "ctrl+c":
+		d = DecisionDeny
+	default:
+		return nil
+	}
+	m.pendingAsk.reply <- d
+	m.pendingAsk = nil
+	m.input.Focus()
+	return nil
+}
+
+func (m *uiModel) startTurn(userInput string) tea.Cmd {
+	m.input.Reset()
+	m.blocks = append(m.blocks, block{kind: blockUser, text: userInput, final: true})
+	m.refreshViewport()
+
+	m.turnCtx, m.turnCancel = context.WithCancel(context.Background())
+	m.turnActive = true
+	m.stepsUsed = 0
+	m.errMsg = ""
+
+	// Replace eventCh per turn: Run closes it when done.
+	m.eventCh = make(chan Event, 128)
+	go m.agent.Run(m.turnCtx, userInput, m.eventCh)
+	return m.waitForEvent()
+}
+
+func (m *uiModel) handleEvent(ev Event) {
+	switch e := ev.(type) {
+	case EventContentDelta:
+		if n := len(m.blocks); n == 0 || m.blocks[n-1].kind != blockAssistant || m.blocks[n-1].final {
+			m.blocks = append(m.blocks, block{kind: blockAssistant})
+		}
+		m.blocks[len(m.blocks)-1].text += e.Text
+	case EventAssistantDone:
+		if n := len(m.blocks); n == 0 || m.blocks[n-1].kind != blockAssistant || m.blocks[n-1].final {
+			m.blocks = append(m.blocks, block{kind: blockAssistant, text: e.Text})
+		} else {
+			m.blocks[len(m.blocks)-1].text = e.Text
+		}
+		m.blocks[len(m.blocks)-1].final = true
+	case EventToolStart:
+		m.stepsUsed++
+		summary := renderToolCall(e.Name, e.Args)
+		m.blocks = append(m.blocks, block{kind: blockTool, tool: e.Name, text: summary, final: false})
+	case EventToolResult:
+		if n := len(m.blocks); n > 0 && m.blocks[n-1].kind == blockTool && !m.blocks[n-1].final {
+			m.blocks[n-1].text += "\n" + indentLines(clipResult(e.Result), "    ")
+			m.blocks[n-1].final = true
+		}
+	case EventToolDenied:
+		m.blocks = append(m.blocks, block{kind: blockNotice, text: fmt.Sprintf("denied %s", e.Name), final: true})
+	case EventTurnDone:
+		m.turnActive = false
+		if m.turnCancel != nil {
+			m.turnCancel()
+		}
+		m.input.Focus()
+		if e.Reason != "done" {
+			m.blocks = append(m.blocks, block{kind: blockNotice, text: e.Reason, final: true})
+		}
+	case EventError:
+		m.turnActive = false
+		if m.turnCancel != nil {
+			m.turnCancel()
+		}
+		m.input.Focus()
+		m.blocks = append(m.blocks, block{kind: blockError, text: e.Err.Error(), final: true})
+	}
+	m.refreshViewport()
+}
+
+func (m *uiModel) View() string {
+	if m.width == 0 {
+		return "initializing…"
+	}
+
+	var b strings.Builder
+	b.WriteString(m.viewport.View())
+	b.WriteString("\n")
+	b.WriteString(m.footer())
+
+	out := b.String()
+	if m.pendingAsk != nil {
+		modal := renderModal(m.pendingAsk, m.width)
+		out = overlayModal(out, modal, m.width, m.height)
+	}
+	return out
+}
+
+func (m *uiModel) footer() string {
+	statusL := statusStyle.Render(fmt.Sprintf("%s @ %s", m.cfg.Model, m.cfg.BaseURL))
+	var statusR string
+	if m.turnActive {
+		statusR = m.spinner.View() + statusStyle.Render(fmt.Sprintf(" step %d/%d · Ctrl+C cancel", m.stepsUsed, m.cfg.MaxSteps))
+	} else {
+		statusR = statusStyle.Render("ready")
+	}
+	pad := m.width - lipgloss.Width(statusL) - lipgloss.Width(statusR)
+	if pad < 1 {
+		pad = 1
+	}
+	status := statusL + strings.Repeat(" ", pad) + statusR
+	return status + "\n" + m.input.View()
+}
+
+func (m *uiModel) layout() {
+	inputH := m.input.Height()
+	if inputH < 3 {
+		inputH = 3
+	}
+	// viewport height = total - input - statusbar - spacing
+	vh := m.height - inputH - 2
+	if vh < 3 {
+		vh = 3
+	}
+	m.viewport.Width = m.width
+	m.viewport.Height = vh
+	m.input.SetWidth(m.width)
+}
+
+func (m *uiModel) refreshViewport() {
+	var sb strings.Builder
+	for i, bl := range m.blocks {
+		if i > 0 {
+			sb.WriteString("\n")
+		}
+		sb.WriteString(m.renderBlock(bl))
+	}
+	m.viewport.SetContent(sb.String())
+	m.viewport.GotoBottom()
+}
+
+func (m *uiModel) renderBlock(b block) string {
+	switch b.kind {
+	case blockUser:
+		return userStyle.Render("› ") + b.text
+	case blockAssistant:
+		if b.final && m.renderer != nil {
+			if out, err := m.renderer.Render(b.text); err == nil {
+				return strings.TrimRight(out, "\n")
+			}
+		}
+		return assistantStyle.Render(b.text)
+	case blockTool:
+		return b.text
+	case blockNotice:
+		return noticeStyle.Render("· " + b.text)
+	case blockError:
+		return errorStyle.Render("✗ " + b.text)
+	}
+	return ""
+}
+
+// --- tool call rendering ---
+
+func renderToolCall(name, rawArgs string) string {
+	head := toolCallStyle.Render("→ "+name) + " " + toolOutStyle.Render(terseArgs(name, rawArgs))
+	return head
+}
+
+func terseArgs(name, rawArgs string) string {
+	var m map[string]any
+	if err := json.Unmarshal([]byte(rawArgs), &m); err != nil {
+		return truncate(rawArgs, 120)
+	}
+	switch ToolName(name) {
+	case ToolBash:
+		if cmd, ok := m["command"].(string); ok {
+			return truncate(cmd, 240)
+		}
+	case ToolReadFile, ToolListDir:
+		if p, ok := m["path"].(string); ok {
+			return p
+		}
+	case ToolWriteFile:
+		p, _ := m["path"].(string)
+		c, _ := m["content"].(string)
+		return fmt.Sprintf("%s (%d bytes)", p, len(c))
+	case ToolEditFile:
+		p, _ := m["path"].(string)
+		return p
+	}
+	return truncate(rawArgs, 120)
+}
+
+func clipResult(s string) string {
+	s = strings.TrimRight(s, "\n")
+	lines := strings.Split(s, "\n")
+	if len(lines) <= 10 {
+		return toolOutStyle.Render(s)
+	}
+	head := strings.Join(lines[:10], "\n")
+	return toolOutStyle.Render(head + fmt.Sprintf("\n… (%d more lines)", len(lines)-10))
+}
+
+func indentLines(s, prefix string) string {
+	if s == "" {
+		return s
+	}
+	lines := strings.Split(s, "\n")
+	for i, l := range lines {
+		lines[i] = prefix + l
+	}
+	return strings.Join(lines, "\n")
+}
+
+func truncate(s string, n int) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= n {
+		return s
+	}
+	return s[:n-1] + "…"
+}
+
+// --- confirmation modal ---
+
+func renderModal(req *confirmRequest, width int) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s\n\n", toolCallStyle.Render("Approve call to "+req.name+"?"))
+	b.WriteString(modalPreview(req.name, req.args))
+	b.WriteString("\n\n")
+	b.WriteString(statusStyle.Render("[y] once   [a] always this tool   [A] always all   [n/Esc] deny"))
+	maxw := width - 6
+	if maxw < 30 {
+		maxw = 30
+	}
+	return modalBoxStyle.Width(maxw).Render(b.String())
+}
+
+func modalPreview(name, rawArgs string) string {
+	var m map[string]any
+	_ = json.Unmarshal([]byte(rawArgs), &m)
+	switch ToolName(name) {
+	case ToolBash:
+		cmd, _ := m["command"].(string)
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("#ffffff")).Render("$ " + cmd)
+	case ToolWriteFile:
+		p, _ := m["path"].(string)
+		c, _ := m["content"].(string)
+		lines := strings.Split(c, "\n")
+		preview := strings.Join(firstN(lines, 20), "\n")
+		head := toolOutStyle.Render(fmt.Sprintf("%s — %d bytes, %d lines", p, len(c), len(lines)))
+		if len(lines) > 20 {
+			preview += toolOutStyle.Render(fmt.Sprintf("\n… (%d more lines)", len(lines)-20))
+		}
+		return head + "\n" + toolOutStyle.Render(preview)
+	case ToolEditFile:
+		p, _ := m["path"].(string)
+		oldS, _ := m["old_string"].(string)
+		newS, _ := m["new_string"].(string)
+		return toolOutStyle.Render(p+":") + "\n" + renderDiff(oldS, newS)
+	}
+	return toolOutStyle.Render(truncate(rawArgs, 400))
+}
+
+func renderDiff(oldS, newS string) string {
+	var b strings.Builder
+	for _, l := range strings.Split(oldS, "\n") {
+		b.WriteString(diffDelStyle.Render("- "+l) + "\n")
+	}
+	for _, l := range strings.Split(newS, "\n") {
+		b.WriteString(diffAddStyle.Render("+ "+l) + "\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func firstN[T any](s []T, n int) []T {
+	if len(s) < n {
+		return s
+	}
+	return s[:n]
+}
+
+// overlayModal centers modal over the base view, naively replacing lines.
+// Good enough for a minimal CLI; not a proper overlay engine.
+func overlayModal(base, modal string, width, height int) string {
+	baseLines := strings.Split(base, "\n")
+	modalLines := strings.Split(modal, "\n")
+	modalH := len(modalLines)
+	modalW := 0
+	for _, l := range modalLines {
+		if w := lipgloss.Width(l); w > modalW {
+			modalW = w
+		}
+	}
+	top := (height - modalH) / 2
+	if top < 0 {
+		top = 0
+	}
+	left := (width - modalW) / 2
+	if left < 0 {
+		left = 0
+	}
+
+	for len(baseLines) < top+modalH {
+		baseLines = append(baseLines, "")
+	}
+	for i, ml := range modalLines {
+		baseLines[top+i] = padRight(stripToWidth(baseLines[top+i], left), left) + ml
+	}
+	return strings.Join(baseLines, "\n")
+}
+
+func padRight(s string, width int) string {
+	w := lipgloss.Width(s)
+	if w >= width {
+		return s
+	}
+	return s + strings.Repeat(" ", width-w)
+}
+
+func stripToWidth(s string, width int) string {
+	if lipgloss.Width(s) <= width {
+		return s
+	}
+	// Conservative: truncate bytes then pad. ANSI-aware truncation is out of scope.
+	return s
+}
+
+// RunTUI starts the Bubble Tea program for the REPL.
+func RunTUI(ctx context.Context, cfg *Config, systemPrompt string) error {
+	m, err := newUIModel(cfg, systemPrompt)
+	if err != nil {
+		return err
+	}
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	_, err = p.Run()
+	return err
+}
