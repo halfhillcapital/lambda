@@ -1,4 +1,4 @@
-package main
+package config
 
 import (
 	"flag"
@@ -7,8 +7,8 @@ import (
 	"strings"
 )
 
-// ErrHelp is returned by LoadConfig when the user passed -h/--help.
-// main treats this as a successful exit.
+// ErrHelp is returned by Load when the user passed -h/--help.
+// Callers should treat this as a successful exit.
 var ErrHelp = flag.ErrHelp
 
 type Config struct {
@@ -27,7 +27,7 @@ const (
 	defaultAPIKey  = "sk-local"
 )
 
-func LoadConfig() (*Config, error) {
+func Load() (*Config, error) {
 	c := &Config{}
 
 	fs := flag.NewFlagSet("lambda", flag.ContinueOnError)

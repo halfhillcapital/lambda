@@ -1,4 +1,4 @@
-package main
+package prompt
 
 import (
 	"fmt"
@@ -16,7 +16,8 @@ Guidelines:
 - Be terse. No preamble, no trailing summaries. The user sees your tool calls and their results.
 - When you're done with the task, stop calling tools and give a one-line answer (or nothing, if the results speak for themselves).`
 
-func BuildSystemPrompt(cwd string) string {
+// Build assembles the system prompt, embedding environment context (cwd, OS, git status).
+func Build(cwd string) string {
 	var b strings.Builder
 	b.WriteString(basePrompt)
 	b.WriteString("\n\n<environment>\n")

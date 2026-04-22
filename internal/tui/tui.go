@@ -1,4 +1,5 @@
-package main
+// Package tui implements the Bubble Tea REPL for lambda.
+package tui
 
 import (
 	"context"
@@ -12,15 +13,23 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
+
+	"lambda/internal/agent"
+	"lambda/internal/config"
+	"lambda/internal/tools"
+)
+
+// Styles exported for reuse by the non-interactive (one-shot) runner.
+var (
+	ErrorStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#ff5f5f")).Bold(true)
+	ToolCallStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffaf5f"))
 )
 
 var (
 	userStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("#87d7ff")).Bold(true)
 	assistantStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffffff"))
-	toolCallStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffaf5f"))
 	toolOutStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#8a8a8a"))
 	noticeStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#d7d787")).Italic(true)
-	errorStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#ff5f5f")).Bold(true)
 	statusStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#626262"))
 	modalBoxStyle  = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
@@ -32,12 +41,12 @@ var (
 
 // --- messages / events plumbing ---
 
-type agentEventMsg struct{ ev Event }
+type agentEventMsg struct{ ev agent.Event }
 type askMsg struct{ req *confirmRequest }
 
 type confirmRequest struct {
 	name, args string
-	reply      chan Decision
+	reply      chan agent.Decision
 }
 
 // --- transcript blocks ---
@@ -62,10 +71,10 @@ type block struct {
 // --- model ---
 
 type uiModel struct {
-	cfg     *Config
-	agent   *Agent
+	cfg     *config.Config
+	agent   *agent.Agent
 	askCh   chan confirmRequest
-	eventCh chan Event
+	eventCh chan agent.Event
 
 	turnCtx    context.Context
 	turnCancel context.CancelFunc
@@ -79,34 +88,33 @@ type uiModel struct {
 
 	blocks []block
 
-	// confirmation modal
 	pendingAsk *confirmRequest
 
 	width, height int
 	errMsg        string
 }
 
-func newUIModel(cfg *Config, systemPrompt string) (*uiModel, error) {
+func newUIModel(cfg *config.Config, systemPrompt string) (*uiModel, error) {
 	m := &uiModel{
 		cfg:     cfg,
 		askCh:   make(chan confirmRequest, 1),
-		eventCh: make(chan Event, 128),
+		eventCh: make(chan agent.Event, 128),
 	}
-	confirmer := func(ctx context.Context, name, args string) Decision {
-		reply := make(chan Decision, 1)
+	confirmer := func(ctx context.Context, name, args string) agent.Decision {
+		reply := make(chan agent.Decision, 1)
 		select {
 		case m.askCh <- confirmRequest{name, args, reply}:
 		case <-ctx.Done():
-			return DecisionDeny
+			return agent.DecisionDeny
 		}
 		select {
 		case d := <-reply:
 			return d
 		case <-ctx.Done():
-			return DecisionDeny
+			return agent.DecisionDeny
 		}
 	}
-	m.agent = NewAgent(cfg, systemPrompt, confirmer)
+	m.agent = agent.New(cfg, systemPrompt, confirmer)
 
 	ta := textarea.New()
 	ta.Placeholder = "Ask anything — Enter to send, Ctrl+J for newline, Ctrl+C to quit"
@@ -240,16 +248,16 @@ func (m *uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *uiModel) handleConfirmKey(msg tea.KeyMsg) tea.Cmd {
 	k := msg.String()
-	var d Decision
+	var d agent.Decision
 	switch k {
 	case "y", "Y", "enter":
-		d = DecisionAllow
+		d = agent.DecisionAllow
 	case "a":
-		d = DecisionAlwaysTool
+		d = agent.DecisionAlwaysTool
 	case "A":
-		d = DecisionAlwaysAll
+		d = agent.DecisionAlwaysAll
 	case "n", "N", "esc", "ctrl+c":
-		d = DecisionDeny
+		d = agent.DecisionDeny
 	default:
 		return nil
 	}
@@ -270,37 +278,37 @@ func (m *uiModel) startTurn(userInput string) tea.Cmd {
 	m.errMsg = ""
 
 	// Replace eventCh per turn: Run closes it when done.
-	m.eventCh = make(chan Event, 128)
+	m.eventCh = make(chan agent.Event, 128)
 	go m.agent.Run(m.turnCtx, userInput, m.eventCh)
 	return m.waitForEvent()
 }
 
-func (m *uiModel) handleEvent(ev Event) {
+func (m *uiModel) handleEvent(ev agent.Event) {
 	switch e := ev.(type) {
-	case EventContentDelta:
+	case agent.EventContentDelta:
 		if n := len(m.blocks); n == 0 || m.blocks[n-1].kind != blockAssistant || m.blocks[n-1].final {
 			m.blocks = append(m.blocks, block{kind: blockAssistant})
 		}
 		m.blocks[len(m.blocks)-1].text += e.Text
-	case EventAssistantDone:
+	case agent.EventAssistantDone:
 		if n := len(m.blocks); n == 0 || m.blocks[n-1].kind != blockAssistant || m.blocks[n-1].final {
 			m.blocks = append(m.blocks, block{kind: blockAssistant, text: e.Text})
 		} else {
 			m.blocks[len(m.blocks)-1].text = e.Text
 		}
 		m.blocks[len(m.blocks)-1].final = true
-	case EventToolStart:
+	case agent.EventToolStart:
 		m.stepsUsed++
 		summary := renderToolCall(e.Name, e.Args)
 		m.blocks = append(m.blocks, block{kind: blockTool, tool: e.Name, text: summary, final: false})
-	case EventToolResult:
+	case agent.EventToolResult:
 		if n := len(m.blocks); n > 0 && m.blocks[n-1].kind == blockTool && !m.blocks[n-1].final {
 			m.blocks[n-1].text += "\n" + indentLines(clipResult(e.Result), "    ")
 			m.blocks[n-1].final = true
 		}
-	case EventToolDenied:
+	case agent.EventToolDenied:
 		m.blocks = append(m.blocks, block{kind: blockNotice, text: fmt.Sprintf("denied %s", e.Name), final: true})
-	case EventTurnDone:
+	case agent.EventTurnDone:
 		m.turnActive = false
 		if m.turnCancel != nil {
 			m.turnCancel()
@@ -309,7 +317,7 @@ func (m *uiModel) handleEvent(ev Event) {
 		if e.Reason != "done" {
 			m.blocks = append(m.blocks, block{kind: blockNotice, text: e.Reason, final: true})
 		}
-	case EventError:
+	case agent.EventError:
 		m.turnActive = false
 		if m.turnCancel != nil {
 			m.turnCancel()
@@ -325,17 +333,16 @@ func (m *uiModel) View() string {
 		return "initializing…"
 	}
 
+	if m.pendingAsk != nil {
+		modal := renderModal(m.pendingAsk, m.width)
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, modal)
+	}
+
 	var b strings.Builder
 	b.WriteString(m.viewport.View())
 	b.WriteString("\n")
 	b.WriteString(m.footer())
-
-	out := b.String()
-	if m.pendingAsk != nil {
-		modal := renderModal(m.pendingAsk, m.width)
-		out = overlayModal(out, modal, m.width, m.height)
-	}
-	return out
+	return b.String()
 }
 
 func (m *uiModel) footer() string {
@@ -397,7 +404,7 @@ func (m *uiModel) renderBlock(b block) string {
 	case blockNotice:
 		return noticeStyle.Render("· " + b.text)
 	case blockError:
-		return errorStyle.Render("✗ " + b.text)
+		return ErrorStyle.Render("✗ " + b.text)
 	}
 	return ""
 }
@@ -405,33 +412,35 @@ func (m *uiModel) renderBlock(b block) string {
 // --- tool call rendering ---
 
 func renderToolCall(name, rawArgs string) string {
-	head := toolCallStyle.Render("→ "+name) + " " + toolOutStyle.Render(terseArgs(name, rawArgs))
+	head := ToolCallStyle.Render("→ "+name) + " " + toolOutStyle.Render(TerseArgs(name, rawArgs))
 	return head
 }
 
-func terseArgs(name, rawArgs string) string {
+// TerseArgs renders a compact, human-readable summary of a tool's JSON arguments.
+// Exported for reuse by the non-interactive runner.
+func TerseArgs(name, rawArgs string) string {
 	var m map[string]any
 	if err := json.Unmarshal([]byte(rawArgs), &m); err != nil {
-		return truncate(rawArgs, 120)
+		return Truncate(rawArgs, 120)
 	}
-	switch ToolName(name) {
-	case ToolBash:
+	switch tools.Name(name) {
+	case tools.Bash:
 		if cmd, ok := m["command"].(string); ok {
-			return truncate(cmd, 240)
+			return Truncate(cmd, 240)
 		}
-	case ToolReadFile, ToolListDir:
+	case tools.ReadFile, tools.ListDir:
 		if p, ok := m["path"].(string); ok {
 			return p
 		}
-	case ToolWriteFile:
+	case tools.WriteFile:
 		p, _ := m["path"].(string)
 		c, _ := m["content"].(string)
 		return fmt.Sprintf("%s (%d bytes)", p, len(c))
-	case ToolEditFile:
+	case tools.EditFile:
 		p, _ := m["path"].(string)
 		return p
 	}
-	return truncate(rawArgs, 120)
+	return Truncate(rawArgs, 120)
 }
 
 func clipResult(s string) string {
@@ -455,7 +464,9 @@ func indentLines(s, prefix string) string {
 	return strings.Join(lines, "\n")
 }
 
-func truncate(s string, n int) string {
+// Truncate trims s to at most n runes (approx), appending an ellipsis if clipped.
+// Exported for reuse by the non-interactive runner.
+func Truncate(s string, n int) string {
 	s = strings.TrimSpace(s)
 	if len(s) <= n {
 		return s
@@ -467,7 +478,7 @@ func truncate(s string, n int) string {
 
 func renderModal(req *confirmRequest, width int) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s\n\n", toolCallStyle.Render("Approve call to "+req.name+"?"))
+	fmt.Fprintf(&b, "%s\n\n", ToolCallStyle.Render("Approve call to "+req.name+"?"))
 	b.WriteString(modalPreview(req.name, req.args))
 	b.WriteString("\n\n")
 	b.WriteString(statusStyle.Render("[y] once   [a] always this tool   [A] always all   [n/Esc] deny"))
@@ -481,11 +492,11 @@ func renderModal(req *confirmRequest, width int) string {
 func modalPreview(name, rawArgs string) string {
 	var m map[string]any
 	_ = json.Unmarshal([]byte(rawArgs), &m)
-	switch ToolName(name) {
-	case ToolBash:
+	switch tools.Name(name) {
+	case tools.Bash:
 		cmd, _ := m["command"].(string)
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("#ffffff")).Render("$ " + cmd)
-	case ToolWriteFile:
+	case tools.WriteFile:
 		p, _ := m["path"].(string)
 		c, _ := m["content"].(string)
 		lines := strings.Split(c, "\n")
@@ -495,13 +506,13 @@ func modalPreview(name, rawArgs string) string {
 			preview += toolOutStyle.Render(fmt.Sprintf("\n… (%d more lines)", len(lines)-20))
 		}
 		return head + "\n" + toolOutStyle.Render(preview)
-	case ToolEditFile:
+	case tools.EditFile:
 		p, _ := m["path"].(string)
 		oldS, _ := m["old_string"].(string)
 		newS, _ := m["new_string"].(string)
 		return toolOutStyle.Render(p+":") + "\n" + renderDiff(oldS, newS)
 	}
-	return toolOutStyle.Render(truncate(rawArgs, 400))
+	return toolOutStyle.Render(Truncate(rawArgs, 400))
 }
 
 func renderDiff(oldS, newS string) string {
@@ -522,54 +533,8 @@ func firstN[T any](s []T, n int) []T {
 	return s[:n]
 }
 
-// overlayModal centers modal over the base view, naively replacing lines.
-// Good enough for a minimal CLI; not a proper overlay engine.
-func overlayModal(base, modal string, width, height int) string {
-	baseLines := strings.Split(base, "\n")
-	modalLines := strings.Split(modal, "\n")
-	modalH := len(modalLines)
-	modalW := 0
-	for _, l := range modalLines {
-		if w := lipgloss.Width(l); w > modalW {
-			modalW = w
-		}
-	}
-	top := (height - modalH) / 2
-	if top < 0 {
-		top = 0
-	}
-	left := (width - modalW) / 2
-	if left < 0 {
-		left = 0
-	}
-
-	for len(baseLines) < top+modalH {
-		baseLines = append(baseLines, "")
-	}
-	for i, ml := range modalLines {
-		baseLines[top+i] = padRight(stripToWidth(baseLines[top+i], left), left) + ml
-	}
-	return strings.Join(baseLines, "\n")
-}
-
-func padRight(s string, width int) string {
-	w := lipgloss.Width(s)
-	if w >= width {
-		return s
-	}
-	return s + strings.Repeat(" ", width-w)
-}
-
-func stripToWidth(s string, width int) string {
-	if lipgloss.Width(s) <= width {
-		return s
-	}
-	// Conservative: truncate bytes then pad. ANSI-aware truncation is out of scope.
-	return s
-}
-
-// RunTUI starts the Bubble Tea program for the REPL.
-func RunTUI(ctx context.Context, cfg *Config, systemPrompt string) error {
+// Run starts the Bubble Tea REPL. It blocks until the program exits.
+func Run(ctx context.Context, cfg *config.Config, systemPrompt string) error {
 	m, err := newUIModel(cfg, systemPrompt)
 	if err != nil {
 		return err

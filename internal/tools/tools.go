@@ -1,4 +1,6 @@
-package main
+// Package tools implements the tool schema registry and dispatcher used by
+// the agent: read_file, write_file, edit_file, list_dir, and bash.
+package tools
 
 import (
 	"context"
@@ -17,33 +19,33 @@ import (
 	"github.com/openai/openai-go/shared"
 )
 
-type ToolName string
+type Name string
 
 const (
-	ToolReadFile  ToolName = "read_file"
-	ToolWriteFile ToolName = "write_file"
-	ToolEditFile  ToolName = "edit_file"
-	ToolListDir   ToolName = "list_dir"
-	ToolBash      ToolName = "bash"
+	ReadFile  Name = "read_file"
+	WriteFile Name = "write_file"
+	EditFile  Name = "edit_file"
+	ListDir   Name = "list_dir"
+	Bash      Name = "bash"
 )
 
 // IsDestructive reports whether a tool can modify the filesystem or
 // execute arbitrary commands. Destructive tools go through the confirmation flow.
-func (t ToolName) IsDestructive() bool {
-	switch t {
-	case ToolWriteFile, ToolEditFile, ToolBash:
+func (n Name) IsDestructive() bool {
+	switch n {
+	case WriteFile, EditFile, Bash:
 		return true
 	default:
 		return false
 	}
 }
 
-// ToolSchemas returns the OpenAI tool definitions for all five tools.
-func ToolSchemas() []openai.ChatCompletionToolParam {
+// Schemas returns the OpenAI tool definitions for all five tools.
+func Schemas() []openai.ChatCompletionToolParam {
 	mk := func(name, desc string, params shared.FunctionParameters) openai.ChatCompletionToolParam {
 		return openai.ChatCompletionToolParam{
 			Function: shared.FunctionDefinitionParam{
-				Name:        string(name),
+				Name:        name,
 				Description: openai.String(desc),
 				Parameters:  params,
 			},
@@ -54,14 +56,14 @@ func ToolSchemas() []openai.ChatCompletionToolParam {
 	intProp := func(d string) map[string]any { return map[string]any{"type": "integer", "description": d} }
 
 	return []openai.ChatCompletionToolParam{
-		mk(string(ToolReadFile), "Read the contents of a file. Returns the file text.", shared.FunctionParameters{
+		mk(string(ReadFile), "Read the contents of a file. Returns the file text.", shared.FunctionParameters{
 			"type": "object",
 			"properties": map[string]any{
 				"path": strProp("Path to the file, absolute or relative to the agent's working directory."),
 			},
 			"required": []string{"path"},
 		}),
-		mk(string(ToolWriteFile), "Create a new file or completely overwrite an existing one with the given content.", shared.FunctionParameters{
+		mk(string(WriteFile), "Create a new file or completely overwrite an existing one with the given content.", shared.FunctionParameters{
 			"type": "object",
 			"properties": map[string]any{
 				"path":    strProp("Path of the file to create or overwrite."),
@@ -69,7 +71,7 @@ func ToolSchemas() []openai.ChatCompletionToolParam {
 			},
 			"required": []string{"path", "content"},
 		}),
-		mk(string(ToolEditFile), "Replace a unique substring in a file. Fails if old_string is not found or matches more than once (unless replace_all is true). Pick old_string with enough surrounding context to be unique.", shared.FunctionParameters{
+		mk(string(EditFile), "Replace a unique substring in a file. Fails if old_string is not found or matches more than once (unless replace_all is true). Pick old_string with enough surrounding context to be unique.", shared.FunctionParameters{
 			"type": "object",
 			"properties": map[string]any{
 				"path":        strProp("Path of the file to edit."),
@@ -79,13 +81,13 @@ func ToolSchemas() []openai.ChatCompletionToolParam {
 			},
 			"required": []string{"path", "old_string", "new_string"},
 		}),
-		mk(string(ToolListDir), "List the entries of a directory (one per line, directories suffixed with /).", shared.FunctionParameters{
+		mk(string(ListDir), "List the entries of a directory (one per line, directories suffixed with /).", shared.FunctionParameters{
 			"type": "object",
 			"properties": map[string]any{
 				"path": strProp("Directory path. Defaults to the current working directory if omitted."),
 			},
 		}),
-		mk(string(ToolBash), "Run a bash command non-interactively (empty stdin) and return its combined stdout+stderr. Bash is required on PATH (git bash on Windows). Default timeout 120s.", shared.FunctionParameters{
+		mk(string(Bash), "Run a bash command non-interactively (empty stdin) and return its combined stdout+stderr. Bash is required on PATH (git bash on Windows). Default timeout 120s.", shared.FunctionParameters{
 			"type": "object",
 			"properties": map[string]any{
 				"command":         strProp("Bash command line, e.g. 'go test ./...'"),
@@ -96,20 +98,20 @@ func ToolSchemas() []openai.ChatCompletionToolParam {
 	}
 }
 
-// ExecuteTool dispatches a tool call by name. args is the raw JSON string from the model.
+// Execute dispatches a tool call by name. rawArgs is the raw JSON string from the model.
 // It returns a textual result to feed back to the model. Errors are never returned —
 // error conditions are reported as the tool result so the model can recover.
-func ExecuteTool(ctx context.Context, name string, rawArgs string) string {
-	res, err := executeToolInner(ctx, name, rawArgs)
+func Execute(ctx context.Context, name, rawArgs string) string {
+	res, err := executeInner(ctx, name, rawArgs)
 	if err != nil {
 		return "error: " + err.Error()
 	}
 	return res
 }
 
-func executeToolInner(ctx context.Context, name, rawArgs string) (string, error) {
-	switch ToolName(name) {
-	case ToolReadFile:
+func executeInner(ctx context.Context, name, rawArgs string) (string, error) {
+	switch Name(name) {
+	case ReadFile:
 		var a struct {
 			Path string `json:"path"`
 		}
@@ -117,7 +119,7 @@ func executeToolInner(ctx context.Context, name, rawArgs string) (string, error)
 			return "", err
 		}
 		return doReadFile(a.Path)
-	case ToolWriteFile:
+	case WriteFile:
 		var a struct {
 			Path    string `json:"path"`
 			Content string `json:"content"`
@@ -126,7 +128,7 @@ func executeToolInner(ctx context.Context, name, rawArgs string) (string, error)
 			return "", err
 		}
 		return doWriteFile(a.Path, a.Content)
-	case ToolEditFile:
+	case EditFile:
 		var a struct {
 			Path       string `json:"path"`
 			OldString  string `json:"old_string"`
@@ -137,7 +139,7 @@ func executeToolInner(ctx context.Context, name, rawArgs string) (string, error)
 			return "", err
 		}
 		return doEditFile(a.Path, a.OldString, a.NewString, a.ReplaceAll)
-	case ToolListDir:
+	case ListDir:
 		var a struct {
 			Path string `json:"path"`
 		}
@@ -145,7 +147,7 @@ func executeToolInner(ctx context.Context, name, rawArgs string) (string, error)
 			return "", err
 		}
 		return doListDir(a.Path)
-	case ToolBash:
+	case Bash:
 		var a struct {
 			Command        string `json:"command"`
 			TimeoutSeconds int    `json:"timeout_seconds"`
@@ -283,7 +285,6 @@ func doBash(ctx context.Context, command string, timeoutSec int) (string, error)
 	cmd.Stdin = nil
 	configureProcessGroup(cmd)
 
-	// Ensure cancellation kills the whole process group (see platform file).
 	cmd.Cancel = func() error { return killProcessGroup(cmd) }
 	cmd.WaitDelay = 2 * time.Second
 
@@ -299,7 +300,6 @@ func doBash(ctx context.Context, command string, timeoutSec int) (string, error)
 		if errors.As(err, &xe) {
 			return s + fmt.Sprintf("\n[exit %d]", xe.ExitCode()), nil
 		}
-		// bash not on PATH, or similar — surface as an error to the model.
 		if errors.Is(err, exec.ErrNotFound) || errors.Is(err, syscall.ENOENT) {
 			return "", fmt.Errorf("bash not found on PATH (install git bash on Windows)")
 		}
@@ -312,7 +312,6 @@ func truncateOutput(s string) string {
 	if len(s) <= bashOutputMaxBytes && strings.Count(s, "\n") <= bashOutputMaxLines {
 		return s
 	}
-	// Truncate by lines first, then bytes.
 	lines := strings.Split(s, "\n")
 	dropped := 0
 	if len(lines) > bashOutputMaxLines {

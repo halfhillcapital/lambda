@@ -1,17 +1,19 @@
-# Byte-compiled / optimized files
-*.o
+# Build output
+/lambda
+/lambda.exe
+/bin/
+/dist/
 
-# Go build cache
-bin/
-pkg/
-
-# Dependencies
-vendor/
+# Go toolchain
+/vendor/
+*.test
+*.out
 
 # IDE and editor files
 .idea/
+.vscode/
 *.swp
 
 # Logs and temporary files
 *.log
-tmp/
+/tmp/

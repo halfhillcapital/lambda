@@ -1,4 +1,6 @@
-package main
+// Package agent implements the tool-calling loop that drives a chat model
+// through one user turn, emitting events for UI consumers.
+package agent
 
 import (
 	"context"
@@ -10,6 +12,9 @@ import (
 	"github.com/openai/openai-go/option"
 	"github.com/openai/openai-go/packages/param"
 	"github.com/openai/openai-go/shared"
+
+	"lambda/internal/config"
+	"lambda/internal/tools"
 )
 
 // Decision is the outcome of a confirmation prompt for a destructive tool call.
@@ -63,7 +68,7 @@ type Agent struct {
 	alwaysAll    bool
 }
 
-func NewAgent(cfg *Config, systemPrompt string, confirmer Confirmer) *Agent {
+func New(cfg *config.Config, systemPrompt string, confirmer Confirmer) *Agent {
 	client := openai.NewClient(
 		option.WithBaseURL(cfg.BaseURL),
 		option.WithAPIKey(cfg.APIKey),
@@ -71,7 +76,7 @@ func NewAgent(cfg *Config, systemPrompt string, confirmer Confirmer) *Agent {
 	return &Agent{
 		client:   client,
 		model:    cfg.Model,
-		tools:    ToolSchemas(),
+		tools:    tools.Schemas(),
 		messages: []openai.ChatCompletionMessageParamUnion{openai.SystemMessage(systemPrompt)},
 		maxSteps: cfg.MaxSteps,
 		noStream: cfg.NoStream,
@@ -117,7 +122,7 @@ func (a *Agent) Run(ctx context.Context, userInput string, out chan<- Event) {
 }
 
 // completeOne issues one completion request and returns the assistant message
-// to append to the history, streaming content deltas into `out` along the way.
+// to append to the history, streaming content deltas into out along the way.
 func (a *Agent) completeOne(ctx context.Context, out chan<- Event) (*openai.ChatCompletionAssistantMessageParam, error) {
 	params := openai.ChatCompletionNewParams{
 		Model:    shared.ChatModel(a.model),
@@ -142,7 +147,6 @@ func (a *Agent) completeOne(ctx context.Context, out chan<- Event) (*openai.Chat
 		return assistantFromMessage(msg), nil
 	}
 
-	// Streaming path.
 	var acc openai.ChatCompletionAccumulator
 	stream := a.client.Chat.Completions.NewStreaming(ctx, params)
 	for stream.Next() {
@@ -174,7 +178,7 @@ func (a *Agent) handleToolCall(ctx context.Context, tc openai.ChatCompletionMess
 	name := tc.Function.Name
 	args := tc.Function.Arguments
 
-	if ToolName(name).IsDestructive() && !a.alwaysAll && !a.allowedTools[name] {
+	if tools.Name(name).IsDestructive() && !a.alwaysAll && !a.allowedTools[name] {
 		switch a.confirmer(ctx, name, args) {
 		case DecisionDeny:
 			emit(ctx, out, EventToolDenied{ID: tc.ID, Name: name})
@@ -188,7 +192,7 @@ func (a *Agent) handleToolCall(ctx context.Context, tc openai.ChatCompletionMess
 	}
 
 	emit(ctx, out, EventToolStart{ID: tc.ID, Name: name, Args: args})
-	result := ExecuteTool(ctx, name, args)
+	result := tools.Execute(ctx, name, args)
 	emit(ctx, out, EventToolResult{ID: tc.ID, Name: name, Result: result})
 	a.messages = append(a.messages, openai.ToolMessage(result, tc.ID))
 
@@ -229,7 +233,6 @@ func withTransientRetry[T any](fn func() (T, error)) (T, error) {
 }
 
 func isTransient(err error) bool {
-	// openai-go wraps HTTP errors in *openai.Error with StatusCode.
 	var apiErr *openai.Error
 	if errors.As(err, &apiErr) {
 		return apiErr.StatusCode >= 500
@@ -250,7 +253,6 @@ func humanizeError(err error) error {
 		case 404:
 			return fmt.Errorf("not found (%d): %s — is the model name correct?", apiErr.StatusCode, apiErr.Message)
 		case 400:
-			// Context-length-exceeded typically surfaces as 400 with a specific message.
 			return fmt.Errorf("bad request (%d): %s", apiErr.StatusCode, apiErr.Message)
 		}
 		return fmt.Errorf("api error (%d): %s", apiErr.StatusCode, apiErr.Message)
