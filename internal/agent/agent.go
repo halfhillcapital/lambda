@@ -73,10 +73,17 @@ type Agent struct {
 	alwaysAll    bool
 
 	// Conversation compaction state.
-	maxContextChars int // soft cap; <=0 disables
-	droppedTurns    int
-	elisionNoteIdx  int // 0 = no note inserted yet
+	maxContextTokens int     // soft cap on prompt tokens; <=0 disables
+	charsPerToken    float64 // running calibration from server-reported prompt_tokens; 0 means no data yet
+	droppedTurns     int
+	elisionNoteIdx   int // 0 = no note inserted yet
 }
+
+// defaultCharsPerToken is the fallback ratio used until the server reports
+// actual prompt_tokens. Chat/tool-call JSON tokenizes denser than plain prose,
+// so this is conservative on the low side (over-estimates tokens, triggering
+// earlier compaction rather than blowing the context window).
+const defaultCharsPerToken = 3.5
 
 func New(cfg *config.Config, systemPrompt string, confirmer Confirmer) *Agent {
 	client := openai.NewClient(
@@ -98,10 +105,18 @@ func New(cfg *config.Config, systemPrompt string, confirmer Confirmer) *Agent {
 			}
 			return confirmer(ctx, name, args)
 		},
-		allowedTools:    map[string]bool{},
-		alwaysAll:       cfg.Yolo,
-		maxContextChars: cfg.MaxContextChars,
+		allowedTools:     map[string]bool{},
+		alwaysAll:        cfg.Yolo,
+		maxContextTokens: cfg.MaxContextTokens,
 	}
+}
+
+// ContextUsage reports the agent's current estimated prompt-token count and
+// the configured soft cap. A cap of 0 means compaction is disabled. The used
+// value tracks the server's actual prompt_tokens once calibrated; before the
+// first completion it uses a char-based estimate.
+func (a *Agent) ContextUsage() (used, limit int) {
+	return a.estimateTokens(), a.maxContextTokens
 }
 
 // Reset clears the conversation history (keeping the original system prompt)
@@ -161,10 +176,22 @@ func (a *Agent) Run(ctx context.Context, userInput string, out chan<- Event) {
 // to append to the history, streaming content deltas into out along the way.
 func (a *Agent) completeOne(ctx context.Context, out chan<- Event) (*openai.ChatCompletionAssistantMessageParam, error) {
 	a.compactIfNeeded()
+	// Snapshot the char count of the exact message set we're sending; pairs
+	// with prompt_tokens in the response to calibrate charsPerToken.
+	charsSent := a.totalChars()
+
 	params := openai.ChatCompletionNewParams{
 		Model:    shared.ChatModel(a.model),
 		Messages: a.messages,
 		Tools:    a.tools,
+	}
+	if !a.noStream {
+		// Ask servers that support it to emit a final usage chunk. Local
+		// inference frameworks ignore this silently; calibration just stays
+		// pinned to whatever value we had before.
+		params.StreamOptions = openai.ChatCompletionStreamOptionsParam{
+			IncludeUsage: param.NewOpt(true),
+		}
 	}
 
 	if a.noStream {
@@ -177,6 +204,7 @@ func (a *Agent) completeOne(ctx context.Context, out chan<- Event) (*openai.Chat
 		if len(comp.Choices) == 0 {
 			return nil, errors.New("model returned no choices")
 		}
+		a.recordTokenUsage(charsSent, comp.Usage.PromptTokens)
 		msg := comp.Choices[0].Message
 		if msg.Content != "" {
 			emit(ctx, out, EventAssistantDone{Text: msg.Content})
@@ -201,6 +229,7 @@ func (a *Agent) completeOne(ctx context.Context, out chan<- Event) (*openai.Chat
 	if len(acc.Choices) == 0 {
 		return nil, errors.New("model returned no choices")
 	}
+	a.recordTokenUsage(charsSent, acc.Usage.PromptTokens)
 	msg := acc.Choices[0].Message
 	if msg.Content != "" {
 		emit(ctx, out, EventAssistantDone{Text: msg.Content})

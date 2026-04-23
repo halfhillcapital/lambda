@@ -13,9 +13,12 @@ A minimal CLI coding agent for local LLMs via any OpenAI-compatible endpoint
   require per-call confirmation (or `--yolo`).
 - **REPL slash commands**: `/new` (or `/clear`) to start a fresh conversation,
   `/help` for the list. Anything starting with `/` is treated as a command.
-- **History compaction**: long REPL sessions stay under a soft chat-history
-  cap (default 400KB ≈ 100K tokens) by dropping oldest turns and inserting
-  a system note about how many were elided. Override with `--max-context-chars`
+- **History compaction**: long REPL sessions stay under a soft prompt-token
+  cap (default 100K) by dropping oldest turns and inserting a system note
+  about how many were elided. If a single remaining turn is still over
+  budget, the biggest tool-result bodies are trimmed in place. The budget is
+  measured against actual `prompt_tokens` reported by the server (with
+  char-based estimation as a fallback). Override with `--max-context-tokens`
   (`0` to disable).
 
 ## Install / build

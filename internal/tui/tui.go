@@ -31,6 +31,7 @@ var (
 	toolOutStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#8a8a8a"))
 	noticeStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#d7d787")).Italic(true)
 	statusStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#626262"))
+	warnStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffd75f"))
 	modalBoxStyle  = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("#ffaf5f")).
@@ -385,11 +386,13 @@ func (m *uiModel) View() string {
 
 func (m *uiModel) footer() string {
 	statusL := statusStyle.Render(fmt.Sprintf("%s @ %s", m.cfg.Model, m.cfg.BaseURL))
+	tokens := m.renderTokenUsage()
+	sep := statusStyle.Render(" · ")
 	var statusR string
 	if m.turnActive {
-		statusR = m.spinner.View() + statusStyle.Render(fmt.Sprintf(" step %d/%d · Ctrl+C cancel", m.stepsUsed, m.cfg.MaxSteps))
+		statusR = m.spinner.View() + statusStyle.Render(fmt.Sprintf(" step %d/%d", m.stepsUsed, m.cfg.MaxSteps)) + sep + tokens + sep + statusStyle.Render("Ctrl+C cancel")
 	} else {
-		statusR = statusStyle.Render("ready")
+		statusR = tokens + sep + statusStyle.Render("ready")
 	}
 	pad := m.width - lipgloss.Width(statusL) - lipgloss.Width(statusR)
 	if pad < 1 {
@@ -397,6 +400,35 @@ func (m *uiModel) footer() string {
 	}
 	status := statusL + strings.Repeat(" ", pad) + statusR
 	return status + "\n" + m.input.View()
+}
+
+// renderTokenUsage returns a colored "used/cap" summary (or just "used" when
+// the cap is disabled). Yellow at 80%+, red at 95%+ so the user sees the
+// context budget getting tight before compaction starts silently trimming.
+func (m *uiModel) renderTokenUsage() string {
+	used, capacity := m.agent.ContextUsage()
+	if capacity <= 0 {
+		return statusStyle.Render(formatTokenCount(used) + " tok")
+	}
+	label := formatTokenCount(used) + "/" + formatTokenCount(capacity) + " tok"
+	ratio := float64(used) / float64(capacity)
+	switch {
+	case ratio >= 0.95:
+		return ErrorStyle.Render(label)
+	case ratio >= 0.80:
+		return warnStyle.Render(label)
+	default:
+		return statusStyle.Render(label)
+	}
+}
+
+// formatTokenCount renders n as either a raw number (under 1K) or a "12.3k"
+// abbreviation (1K+). Keeps the footer compact on narrow terminals.
+func formatTokenCount(n int) string {
+	if n < 1000 {
+		return fmt.Sprintf("%d", n)
+	}
+	return fmt.Sprintf("%.1fk", float64(n)/1000)
 }
 
 func (m *uiModel) layout() {

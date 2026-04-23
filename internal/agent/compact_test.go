@@ -56,12 +56,12 @@ func TestCompactDisabledByDefault(t *testing.T) {
 			openai.SystemMessage("sys"),
 			openai.UserMessage("hello"),
 		},
-		maxContextChars: 0,
+		maxContextTokens: 0,
 	}
 	before := len(a.messages)
 	a.compactIfNeeded()
 	if len(a.messages) != before {
-		t.Errorf("compaction should be disabled when maxContextChars<=0; got %d→%d", before, len(a.messages))
+		t.Errorf("compaction should be disabled when maxContextTokens<=0; got %d→%d", before, len(a.messages))
 	}
 	if a.droppedTurns != 0 {
 		t.Errorf("droppedTurns=%d, want 0 when disabled", a.droppedTurns)
@@ -75,7 +75,7 @@ func TestCompactNoOpUnderCap(t *testing.T) {
 			openai.UserMessage("hi"),
 			makeAssistant("hello"),
 		},
-		maxContextChars: 100_000,
+		maxContextTokens: 30_000,
 	}
 	before := len(a.messages)
 	a.compactIfNeeded()
@@ -97,7 +97,7 @@ func TestCompactDropsOldestTurn(t *testing.T) {
 			makeAssistant(strings.Repeat("a", 200)+itoa(i)),
 		)
 	}
-	a := &Agent{messages: msgs, maxContextChars: 800}
+	a := &Agent{messages: msgs, maxContextTokens: 230}
 
 	a.compactIfNeeded()
 
@@ -115,11 +115,11 @@ func TestCompactDropsOldestTurn(t *testing.T) {
 	if lastUserIdx < 0 {
 		t.Fatal("no user message remaining")
 	}
-	if got := a.totalChars(); got > a.maxContextChars {
-		// Compaction is "best effort" — single-turn-too-big is allowed.
-		// But here we have multiple turns, so we should be at/under cap.
-		// Tolerance: at most 1 turn over cap is acceptable since we keep the latest.
-		t.Logf("totalChars=%d, cap=%d (acceptable if last turn alone exceeds cap)", got, a.maxContextChars)
+	if got := a.estimateTokens(); got > a.maxContextTokens {
+		// Compaction is "best effort" — the shrinker only targets tool
+		// messages, so a last-turn user/assistant pair that alone exceeds
+		// the cap is tolerated.
+		t.Logf("estimateTokens=%d, cap=%d (acceptable if last turn alone exceeds cap)", got, a.maxContextTokens)
 	}
 }
 
@@ -133,7 +133,7 @@ func TestCompactInsertsAndUpdatesElisionNote(t *testing.T) {
 			makeAssistant(strings.Repeat("a", 200)+itoa(i)),
 		)
 	}
-	a := &Agent{messages: msgs, maxContextChars: 800}
+	a := &Agent{messages: msgs, maxContextTokens: 230}
 
 	a.compactIfNeeded()
 	firstDrops := a.droppedTurns
@@ -187,7 +187,7 @@ func TestCompactKeepsAtLeastOneTurn(t *testing.T) {
 			openai.SystemMessage("sys"),
 			openai.UserMessage(strings.Repeat("x", 5000)),
 		},
-		maxContextChars: 100,
+		maxContextTokens: 30,
 	}
 	a.compactIfNeeded()
 	// Even though we're way over cap, we can't drop the only user message.
@@ -202,6 +202,49 @@ func TestCompactKeepsAtLeastOneTurn(t *testing.T) {
 	}
 }
 
+func TestEstimateTokensUsesDefaultRatioWhenUncalibrated(t *testing.T) {
+	a := &Agent{messages: []openai.ChatCompletionMessageParamUnion{
+		openai.UserMessage(strings.Repeat("x", 350)),
+	}}
+	chars := a.totalChars()
+	got := a.estimateTokens()
+	// With defaultCharsPerToken=3.5, ceil(350/3.5) = 100, but totalChars also
+	// includes JSON overhead — sanity check the ratio, not the exact number.
+	if got <= 0 || got > chars {
+		t.Errorf("estimateTokens=%d, totalChars=%d — expected 0<est<=chars", got, chars)
+	}
+}
+
+func TestRecordTokenUsageCalibrates(t *testing.T) {
+	a := &Agent{}
+	a.recordTokenUsage(1000, 250) // 4.0 chars/token
+	if a.charsPerToken != 4.0 {
+		t.Errorf("charsPerToken=%v, want 4.0", a.charsPerToken)
+	}
+	// Zero/negative inputs must not clobber a good calibration.
+	a.recordTokenUsage(0, 100)
+	if a.charsPerToken != 4.0 {
+		t.Errorf("zero charsSent must not change calibration; got %v", a.charsPerToken)
+	}
+	a.recordTokenUsage(500, 0)
+	if a.charsPerToken != 4.0 {
+		t.Errorf("zero promptTokens must not change calibration; got %v", a.charsPerToken)
+	}
+}
+
+func TestEstimateTokensUsesCalibratedRatio(t *testing.T) {
+	a := &Agent{messages: []openai.ChatCompletionMessageParamUnion{
+		openai.UserMessage(strings.Repeat("x", 400)),
+	}}
+	before := a.estimateTokens()
+	// A looser ratio (more chars per token) should lower the estimate.
+	a.recordTokenUsage(1000, 100) // 10 chars/token
+	after := a.estimateTokens()
+	if after >= before {
+		t.Errorf("after calibration to 10 chars/token, estimate should drop: before=%d after=%d", before, after)
+	}
+}
+
 func TestCompactShrinksOversizedToolMessage(t *testing.T) {
 	// One turn with a huge tool reply — drop loop can't help, so the shrinker
 	// must kick in and truncate the tool message body until we fit.
@@ -213,12 +256,12 @@ func TestCompactShrinksOversizedToolMessage(t *testing.T) {
 			makeAssistant("calling tool"),
 			openai.ToolMessage(huge, "call_1"),
 		},
-		maxContextChars: 2_000,
+		maxContextTokens: 600,
 	}
 	a.compactIfNeeded()
 
-	if got := a.totalChars(); got > a.maxContextChars {
-		t.Errorf("shrink failed: totalChars=%d > cap=%d", got, a.maxContextChars)
+	if got := a.estimateTokens(); got > a.maxContextTokens {
+		t.Errorf("shrink failed: estimateTokens=%d > cap=%d", got, a.maxContextTokens)
 	}
 	// Tool message must still exist and keep its tool_call_id so the pairing invariant holds.
 	var tool *openai.ChatCompletionToolMessageParam

@@ -7,16 +7,16 @@ import (
 	"github.com/openai/openai-go"
 )
 
-// compactIfNeeded drops oldest turns until the message list fits inside
-// maxContextChars, preserving leading system messages and at least the most
-// recent turn. A single system note records how many turns were elided.
-// If the last remaining turn alone exceeds the budget, we fall back to
-// truncating its largest tool message bodies so the request still fits.
+// compactIfNeeded drops oldest turns until the estimated prompt-token count
+// fits inside maxContextTokens, preserving leading system messages and at
+// least the most recent turn. A single system note records how many turns
+// were elided. If the last remaining turn alone exceeds the budget, we fall
+// back to truncating its largest tool message bodies so the request still fits.
 func (a *Agent) compactIfNeeded() {
-	if a.maxContextChars <= 0 {
+	if a.maxContextTokens <= 0 {
 		return
 	}
-	for a.totalChars() > a.maxContextChars {
+	for a.estimateTokens() > a.maxContextTokens {
 		headEnd := a.skipSystemHead()
 		from := a.firstUserAfter(headEnd)
 		if from < 0 {
@@ -31,7 +31,7 @@ func (a *Agent) compactIfNeeded() {
 		// The note (if any) was inside the leading-system run, so its index
 		// doesn't shift when we delete from `from` (which is past headEnd).
 	}
-	if a.totalChars() > a.maxContextChars {
+	if a.estimateTokens() > a.maxContextTokens {
 		a.shrinkLargestToolMessages()
 	}
 	a.refreshElisionNote()
@@ -42,7 +42,7 @@ func (a *Agent) compactIfNeeded() {
 // only after the drop loop has exhausted droppable turns.
 func (a *Agent) shrinkLargestToolMessages() {
 	const minBody = 512
-	for a.totalChars() > a.maxContextChars {
+	for a.estimateTokens() > a.maxContextTokens {
 		idx, size := a.largestToolMessage()
 		if idx < 0 || size <= minBody {
 			return
@@ -92,9 +92,8 @@ func (a *Agent) refreshElisionNote() {
 	a.elisionNoteIdx = insertAt
 }
 
-// totalChars estimates the size of the message list as the sum of each
-// message's JSON-marshalled length. Matches the bytes actually sent to the
-// API, so it tracks model context budget directly (modulo tokenization).
+// totalChars returns the size of the message list as the sum of each
+// message's JSON-marshalled length. Matches the bytes actually sent to the API.
 func (a *Agent) totalChars() int {
 	n := 0
 	for _, m := range a.messages {
@@ -105,6 +104,35 @@ func (a *Agent) totalChars() int {
 		n += len(b)
 	}
 	return n
+}
+
+// estimateTokens converts totalChars() to a token estimate using the calibration
+// ratio from the server's last-reported prompt_tokens, or defaultCharsPerToken
+// if we haven't seen a server response yet. Always rounds up (ceiling) so the
+// budget check errs on the side of compacting earlier.
+func (a *Agent) estimateTokens() int {
+	ratio := a.charsPerToken
+	if ratio <= 0 {
+		ratio = defaultCharsPerToken
+	}
+	chars := a.totalChars()
+	est := float64(chars) / ratio
+	rounded := int(est)
+	if est > float64(rounded) {
+		rounded++
+	}
+	return rounded
+}
+
+// recordTokenUsage calibrates charsPerToken from the server's prompt_tokens for
+// the message set we just sent. Called after each completion; best-effort —
+// servers that don't report usage (common for some local inference frameworks)
+// leave the calibration at its previous value.
+func (a *Agent) recordTokenUsage(charsSent int, promptTokens int64) {
+	if promptTokens <= 0 || charsSent <= 0 {
+		return
+	}
+	a.charsPerToken = float64(charsSent) / float64(promptTokens)
 }
 
 // skipSystemHead returns the index of the first non-system message.
