@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -65,6 +66,10 @@ func runOneShot(ctx context.Context, cfg *config.Config, systemPrompt, userInput
 			fmt.Fprintln(os.Stderr, "error:", e.Err)
 			exitCode = 1
 		}
+	}
+	// SIGINT/SIGTERM came in during the turn — use the conventional 130.
+	if errors.Is(ctx.Err(), context.Canceled) {
+		os.Exit(130)
 	}
 	if exitCode != 0 {
 		os.Exit(exitCode)

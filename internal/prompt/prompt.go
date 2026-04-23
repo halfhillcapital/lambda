@@ -28,7 +28,7 @@ func Build(cwd string) string {
 		fmt.Fprintf(&b, "uname: %s\n", u)
 	}
 	if gs := shellOut("git", "status", "--short", "--branch"); gs != "" {
-		fmt.Fprintf(&b, "git:\n%s\n", indent(gs, "  "))
+		fmt.Fprintf(&b, "git:\n%s\n", indent(truncateLines(gs, 40), "  "))
 	}
 	b.WriteString("</environment>")
 	return b.String()
@@ -48,4 +48,15 @@ func indent(s, prefix string) string {
 		lines[i] = prefix + l
 	}
 	return strings.Join(lines, "\n")
+}
+
+// truncateLines keeps at most maxLines lines of s, appending a count of the
+// elided ones. Used for environment context like `git status` which can balloon
+// in dirty repos.
+func truncateLines(s string, maxLines int) string {
+	lines := strings.Split(s, "\n")
+	if len(lines) <= maxLines {
+		return s
+	}
+	return strings.Join(lines[:maxLines], "\n") + fmt.Sprintf("\n… (%d more lines)", len(lines)-maxLines)
 }

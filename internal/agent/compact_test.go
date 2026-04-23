@@ -202,6 +202,43 @@ func TestCompactKeepsAtLeastOneTurn(t *testing.T) {
 	}
 }
 
+func TestCompactShrinksOversizedToolMessage(t *testing.T) {
+	// One turn with a huge tool reply — drop loop can't help, so the shrinker
+	// must kick in and truncate the tool message body until we fit.
+	huge := strings.Repeat("x", 10_000)
+	a := &Agent{
+		messages: []openai.ChatCompletionMessageParamUnion{
+			openai.SystemMessage("sys"),
+			openai.UserMessage("run a big command"),
+			makeAssistant("calling tool"),
+			openai.ToolMessage(huge, "call_1"),
+		},
+		maxContextChars: 2_000,
+	}
+	a.compactIfNeeded()
+
+	if got := a.totalChars(); got > a.maxContextChars {
+		t.Errorf("shrink failed: totalChars=%d > cap=%d", got, a.maxContextChars)
+	}
+	// Tool message must still exist and keep its tool_call_id so the pairing invariant holds.
+	var tool *openai.ChatCompletionToolMessageParam
+	for _, m := range a.messages {
+		if m.OfTool != nil {
+			tool = m.OfTool
+		}
+	}
+	if tool == nil {
+		t.Fatal("tool message disappeared after shrinking")
+	}
+	if tool.ToolCallID != "call_1" {
+		t.Errorf("tool_call_id not preserved after shrink: %q", tool.ToolCallID)
+	}
+	body := tool.Content.OfString.Value
+	if !strings.Contains(body, "truncated from") {
+		t.Errorf("expected truncation marker in body; got %q", body[:min(80, len(body))])
+	}
+}
+
 func TestReset(t *testing.T) {
 	a := &Agent{
 		messages: []openai.ChatCompletionMessageParamUnion{

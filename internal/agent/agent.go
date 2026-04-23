@@ -9,6 +9,7 @@ import (
 	"io"
 	"math/rand/v2"
 	"net"
+	"net/http"
 	"syscall"
 	"time"
 
@@ -81,6 +82,7 @@ func New(cfg *config.Config, systemPrompt string, confirmer Confirmer) *Agent {
 	client := openai.NewClient(
 		option.WithBaseURL(cfg.BaseURL),
 		option.WithAPIKey(cfg.APIKey),
+		option.WithHTTPClient(newHTTPClient()),
 	)
 	return &Agent{
 		client:   client,
@@ -128,7 +130,11 @@ func (a *Agent) Run(ctx context.Context, userInput string, out chan<- Event) {
 	for step := 0; step < a.maxSteps; step++ {
 		assistant, err := a.completeOne(ctx, out)
 		if err != nil {
-			emit(ctx, out, EventError{Err: err})
+			// On ctx cancellation the TUI drives a close-channel signal; don't
+			// surface the wrapped-context error as an EventError.
+			if ctx.Err() == nil {
+				emit(ctx, out, EventError{Err: err})
+			}
 			return
 		}
 		a.messages = append(a.messages, openai.ChatCompletionMessageParamUnion{OfAssistant: assistant})
@@ -137,9 +143,14 @@ func (a *Agent) Run(ctx context.Context, userInput string, out chan<- Event) {
 			emit(ctx, out, EventTurnDone{Reason: "done"})
 			return
 		}
-		for _, tc := range assistant.ToolCalls {
+		for i, tc := range assistant.ToolCalls {
 			if !a.handleToolCall(ctx, tc, out) {
-				return // ctx cancelled mid-turn
+				// Cancelled mid-turn. Every tool_call_id on the assistant message
+				// must have a paired tool message, or the next request 400s.
+				for _, rem := range assistant.ToolCalls[i+1:] {
+					a.messages = append(a.messages, openai.ToolMessage("cancelled by user", rem.ID))
+				}
+				return
 			}
 		}
 	}
@@ -245,6 +256,24 @@ func assistantFromMessage(msg openai.ChatCompletionMessage) *openai.ChatCompleti
 		}
 	}
 	return p
+}
+
+// newHTTPClient returns an http.Client with bounded connect and response-header
+// timeouts but no overall Timeout: streaming completions from local LLMs can
+// legitimately run for minutes, so we only want to catch a stuck dial or a
+// server that never starts responding. The user can Ctrl+C otherwise.
+func newHTTPClient() *http.Client {
+	transport := &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          10,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		ResponseHeaderTimeout: 60 * time.Second,
+	}
+	return &http.Client{Transport: transport}
 }
 
 // retryBackoffs are the inter-attempt delays for withTransientRetry.

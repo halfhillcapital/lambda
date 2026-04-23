@@ -42,6 +42,7 @@ var (
 // --- messages / events plumbing ---
 
 type agentEventMsg struct{ ev agent.Event }
+type turnEndedMsg struct{} // event channel closed; ensures turnActive always clears
 type askMsg struct{ req *confirmRequest }
 
 type confirmRequest struct {
@@ -179,7 +180,7 @@ func (m *uiModel) waitForEvent() tea.Cmd {
 	return func() tea.Msg {
 		ev, ok := <-m.eventCh
 		if !ok {
-			return nil
+			return turnEndedMsg{}
 		}
 		return agentEventMsg{ev: ev}
 	}
@@ -209,6 +210,20 @@ func (m *uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case agentEventMsg:
 		m.handleEvent(msg.ev)
 		cmds = append(cmds, m.waitForEvent())
+
+	case turnEndedMsg:
+		// Catch-all for turn exit without a TurnDone/Error event (ctx cancel
+		// drops in-flight emits); TurnDone/Error already cleared turnActive.
+		if m.turnActive {
+			m.turnActive = false
+			if m.turnCancel != nil {
+				m.turnCancel()
+			}
+			m.input.Focus()
+			m.blocks = append(m.blocks, block{kind: blockNotice, text: "cancelled", final: true})
+			m.refreshViewport()
+		}
+		return m, nil
 
 	case tea.KeyMsg:
 		if m.pendingAsk != nil {

@@ -2,6 +2,7 @@ package tools
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -257,6 +258,32 @@ func grepFile(path, rel string, re *regexp.Regexp, matches *[]string, maxResults
 	}
 }
 
+// binarySignatures are leading-byte patterns for common non-text formats that
+// might not contain a NUL in the first probe window.
+var binarySignatures = [][]byte{
+	{0x7F, 'E', 'L', 'F'},      // ELF
+	{'M', 'Z'},                 // PE / DOS
+	{'P', 'K', 0x03, 0x04},     // ZIP / jar / docx / xlsx
+	{'P', 'K', 0x05, 0x06},     // ZIP (empty)
+	{0xCA, 0xFE, 0xBA, 0xBE},   // Java class / Universal binary
+	{0xFE, 0xED, 0xFA, 0xCE},   // Mach-O 32
+	{0xFE, 0xED, 0xFA, 0xCF},   // Mach-O 64
+	{0x89, 'P', 'N', 'G'},      // PNG
+	{0xFF, 0xD8, 0xFF},         // JPEG
+	{'G', 'I', 'F', '8'},       // GIF
+	{'%', 'P', 'D', 'F'},       // PDF
+	{0x1F, 0x8B},               // gzip
+	{'B', 'Z', 'h'},            // bzip2
+	{0xFD, '7', 'z', 'X', 'Z'}, // xz
+	{0xFF, 0xFE},               // UTF-16 LE BOM (unsearchable with UTF-8 regex)
+	{0xFE, 0xFF},               // UTF-16 BE BOM
+}
+
 func isBinary(b []byte) bool {
+	for _, sig := range binarySignatures {
+		if bytes.HasPrefix(b, sig) {
+			return true
+		}
+	}
 	return slices.Contains(b, 0)
 }

@@ -307,14 +307,28 @@ func TestDoGrep(t *testing.T) {
 }
 
 func TestIsBinary(t *testing.T) {
-	if !isBinary([]byte{'a', 0x00, 'b'}) {
-		t.Error("should detect null byte")
+	cases := []struct {
+		name string
+		in   []byte
+		want bool
+	}{
+		{"null byte", []byte{'a', 0x00, 'b'}, true},
+		{"plain text", []byte("hello world\n"), false},
+		{"empty", nil, false},
+		{"ELF", []byte{0x7F, 'E', 'L', 'F', 0x02, 0x01}, true},
+		{"PE/MZ", []byte{'M', 'Z', 0x90, 0x00}, true},
+		{"ZIP", []byte{'P', 'K', 0x03, 0x04}, true},
+		{"PNG", []byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A}, true},
+		{"UTF-16 LE BOM", []byte{0xFF, 0xFE, 'h', 0x00, 'i', 0x00}, true},
+		{"UTF-16 BE BOM", []byte{0xFE, 0xFF, 0x00, 'h', 0x00, 'i'}, true},
+		{"UTF-8 BOM followed by text", []byte{0xEF, 0xBB, 0xBF, 'h', 'i'}, false},
 	}
-	if isBinary([]byte("hello world\n")) {
-		t.Error("text is not binary")
-	}
-	if isBinary(nil) {
-		t.Error("empty input is not binary")
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := isBinary(c.in); got != c.want {
+				t.Errorf("isBinary(%v) = %v, want %v", c.in, got, c.want)
+			}
+		})
 	}
 }
 

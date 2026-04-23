@@ -10,6 +10,8 @@ import (
 // compactIfNeeded drops oldest turns until the message list fits inside
 // maxContextChars, preserving leading system messages and at least the most
 // recent turn. A single system note records how many turns were elided.
+// If the last remaining turn alone exceeds the budget, we fall back to
+// truncating its largest tool message bodies so the request still fits.
 func (a *Agent) compactIfNeeded() {
 	if a.maxContextChars <= 0 {
 		return
@@ -18,18 +20,56 @@ func (a *Agent) compactIfNeeded() {
 		headEnd := a.skipSystemHead()
 		from := a.firstUserAfter(headEnd)
 		if from < 0 {
-			return
+			break
 		}
 		to := a.firstUserAfter(from + 1)
 		if to < 0 {
-			return // only one turn left; can't drop without losing the request
+			break // only one turn left; drop-loop can't help
 		}
 		a.messages = slices.Delete(a.messages, from, to)
 		a.droppedTurns++
 		// The note (if any) was inside the leading-system run, so its index
 		// doesn't shift when we delete from `from` (which is past headEnd).
 	}
+	if a.totalChars() > a.maxContextChars {
+		a.shrinkLargestToolMessages()
+	}
 	a.refreshElisionNote()
+}
+
+// shrinkLargestToolMessages truncates tool message bodies, largest first, until
+// the total fits the budget or nothing meaningful is left to shrink. Called
+// only after the drop loop has exhausted droppable turns.
+func (a *Agent) shrinkLargestToolMessages() {
+	const minBody = 512
+	for a.totalChars() > a.maxContextChars {
+		idx, size := a.largestToolMessage()
+		if idx < 0 || size <= minBody {
+			return
+		}
+		m := a.messages[idx].OfTool
+		body := m.Content.OfString.Value
+		target := max(size/2, minBody)
+		trimmed := body[:target] + fmt.Sprintf("\n… (tool result truncated from %d to %d bytes to fit context)", len(body), target)
+		a.messages[idx] = openai.ToolMessage(trimmed, m.ToolCallID)
+	}
+}
+
+// largestToolMessage returns the index and string-content length of the
+// biggest tool message in the history, or (-1, 0) if none has string content.
+func (a *Agent) largestToolMessage() (int, int) {
+	bestIdx, bestSize := -1, 0
+	for i, m := range a.messages {
+		if m.OfTool == nil || !m.OfTool.Content.OfString.Valid() {
+			continue
+		}
+		s := m.OfTool.Content.OfString.Value
+		if len(s) > bestSize {
+			bestSize = len(s)
+			bestIdx = i
+		}
+	}
+	return bestIdx, bestSize
 }
 
 // refreshElisionNote inserts or updates a system message recording how many
