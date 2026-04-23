@@ -117,7 +117,7 @@ func newUIModel(cfg *config.Config, systemPrompt string) (*uiModel, error) {
 	m.agent = agent.New(cfg, systemPrompt, confirmer)
 
 	ta := textarea.New()
-	ta.Placeholder = "Ask anything — Enter to send, Ctrl+J for newline, Ctrl+C to quit"
+	ta.Placeholder = "Ask anything — Enter to send, Ctrl+J for newline, /help for commands, Ctrl+C to quit"
 	ta.Prompt = "│ "
 	ta.ShowLineNumbers = false
 	ta.CharLimit = 0
@@ -226,6 +226,10 @@ func (m *uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if text == "" || m.turnActive {
 				return m, nil
 			}
+			if strings.HasPrefix(text, "/") {
+				m.handleSlashCommand(text)
+				return m, nil
+			}
 			return m, m.startTurn(text)
 		case "ctrl+j":
 			m.input.InsertString("\n")
@@ -244,6 +248,25 @@ func (m *uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.viewport, vcmd = m.viewport.Update(msg)
 	cmds = append(cmds, tcmd, vcmd)
 	return m, tea.Batch(cmds...)
+}
+
+// handleSlashCommand processes a `/`-prefixed input as a REPL command.
+// Unknown commands surface an error block; recognised commands act and
+// append a notice. No model call is made.
+func (m *uiModel) handleSlashCommand(text string) {
+	m.input.Reset()
+	cmd := strings.Fields(text)[0]
+	switch cmd {
+	case "/new", "/clear":
+		m.agent.Reset()
+		m.blocks = nil
+		m.blocks = append(m.blocks, block{kind: blockNotice, text: "started a new conversation", final: true})
+	case "/help":
+		m.blocks = append(m.blocks, block{kind: blockNotice, text: "commands: /new (or /clear) to reset · /help · Ctrl+C to cancel turn or quit · Ctrl+J for newline · PgUp/PgDn to scroll", final: true})
+	default:
+		m.blocks = append(m.blocks, block{kind: blockError, text: "unknown command: " + cmd + " (try /help)", final: true})
+	}
+	m.refreshViewport()
 }
 
 func (m *uiModel) handleConfirmKey(msg tea.KeyMsg) tea.Cmd {

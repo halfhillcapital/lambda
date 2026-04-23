@@ -6,6 +6,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"math/rand/v2"
+	"net"
+	"syscall"
 	"time"
 
 	"github.com/openai/openai-go"
@@ -66,6 +70,11 @@ type Agent struct {
 
 	allowedTools map[string]bool
 	alwaysAll    bool
+
+	// Conversation compaction state.
+	maxContextChars int // soft cap; <=0 disables
+	droppedTurns    int
+	elisionNoteIdx  int // 0 = no note inserted yet
 }
 
 func New(cfg *config.Config, systemPrompt string, confirmer Confirmer) *Agent {
@@ -87,9 +96,25 @@ func New(cfg *config.Config, systemPrompt string, confirmer Confirmer) *Agent {
 			}
 			return confirmer(ctx, name, args)
 		},
-		allowedTools: map[string]bool{},
-		alwaysAll:    cfg.Yolo,
+		allowedTools:    map[string]bool{},
+		alwaysAll:       cfg.Yolo,
+		maxContextChars: cfg.MaxContextChars,
 	}
+}
+
+// Reset clears the conversation history (keeping the original system prompt)
+// and any per-session "always allow" approvals. Used by REPL slash commands
+// like /new.
+func (a *Agent) Reset() {
+	if len(a.messages) > 0 && roleOf(a.messages[0]) == "system" {
+		a.messages = a.messages[:1]
+	} else {
+		a.messages = a.messages[:0]
+	}
+	a.droppedTurns = 0
+	a.elisionNoteIdx = 0
+	a.allowedTools = map[string]bool{}
+	a.alwaysAll = a.yolo
 }
 
 // Run executes one user turn: append the user message, then loop requesting
@@ -124,6 +149,7 @@ func (a *Agent) Run(ctx context.Context, userInput string, out chan<- Event) {
 // completeOne issues one completion request and returns the assistant message
 // to append to the history, streaming content deltas into out along the way.
 func (a *Agent) completeOne(ctx context.Context, out chan<- Event) (*openai.ChatCompletionAssistantMessageParam, error) {
+	a.compactIfNeeded()
 	params := openai.ChatCompletionNewParams{
 		Model:    shared.ChatModel(a.model),
 		Messages: a.messages,
@@ -131,7 +157,7 @@ func (a *Agent) completeOne(ctx context.Context, out chan<- Event) (*openai.Chat
 	}
 
 	if a.noStream {
-		comp, err := withTransientRetry(func() (*openai.ChatCompletion, error) {
+		comp, err := withTransientRetry(ctx, func() (*openai.ChatCompletion, error) {
 			return a.client.Chat.Completions.New(ctx, params)
 		})
 		if err != nil {
@@ -221,23 +247,63 @@ func assistantFromMessage(msg openai.ChatCompletionMessage) *openai.ChatCompleti
 	return p
 }
 
-// withTransientRetry retries a one-off request once on 5xx / connection flaps
-// with a 1s backoff.
-func withTransientRetry[T any](fn func() (T, error)) (T, error) {
-	res, err := fn()
-	if err == nil || !isTransient(err) {
-		return res, err
+// retryBackoffs are the inter-attempt delays for withTransientRetry.
+// len(retryBackoffs)+1 attempts are made in total. Exposed as a package var
+// so tests can shorten it.
+var retryBackoffs = []time.Duration{500 * time.Millisecond, 1500 * time.Millisecond}
+
+// withTransientRetry calls fn, retrying on transient errors (5xx, 408, 429,
+// EOF, connection resets) with exponential backoff + ±25% jitter. Honors ctx
+// cancellation: returns the last result/error immediately if ctx is done
+// during a backoff sleep.
+func withTransientRetry[T any](ctx context.Context, fn func() (T, error)) (T, error) {
+	var (
+		res T
+		err error
+	)
+	for attempt := 0; ; attempt++ {
+		res, err = fn()
+		if err == nil || !isTransient(err) || attempt >= len(retryBackoffs) {
+			return res, err
+		}
+		timer := time.NewTimer(jitter(retryBackoffs[attempt]))
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+			return res, err
+		}
 	}
-	time.Sleep(1 * time.Second)
-	return fn()
+}
+
+// jitter returns d perturbed by ±25%.
+func jitter(d time.Duration) time.Duration {
+	if d <= 0 {
+		return d
+	}
+	return time.Duration(float64(d) * (0.75 + rand.Float64()*0.5))
 }
 
 func isTransient(err error) bool {
+	if err == nil {
+		return false
+	}
 	var apiErr *openai.Error
 	if errors.As(err, &apiErr) {
+		switch apiErr.StatusCode {
+		case 408, 429:
+			return true
+		}
 		return apiErr.StatusCode >= 500
 	}
-	return false
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	if errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNABORTED) {
+		return true
+	}
+	var netErr *net.OpError
+	return errors.As(err, &netErr)
 }
 
 // humanizeError turns transport/auth failures into messages the user can act on.

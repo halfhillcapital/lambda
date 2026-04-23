@@ -12,14 +12,15 @@ import (
 var ErrHelp = flag.ErrHelp
 
 type Config struct {
-	BaseURL  string
-	APIKey   string
-	Model    string
-	MaxSteps int
-	NoStream bool
-	Yolo     bool
-	Prompt   string // -p one-shot prompt
-	Args     []string
+	BaseURL         string
+	APIKey          string
+	Model           string
+	MaxSteps        int
+	MaxContextChars int
+	NoStream        bool
+	Yolo            bool
+	Prompt          string // -p one-shot prompt
+	Args            []string
 }
 
 const (
@@ -60,6 +61,7 @@ Examples:
 	fs.StringVar(&c.APIKey, "api-key", "", "API key (local servers usually ignore the value)")
 	fs.StringVar(&c.Model, "model", "", "model ID (e.g. qwen2.5-coder, llama3.1:8b)")
 	fs.IntVar(&c.MaxSteps, "max-steps", 50, "max tool-call rounds per user turn")
+	fs.IntVar(&c.MaxContextChars, "max-context-chars", 400*1024, "soft cap on chat-history size in chars; oldest turns are dropped beyond this. 0 disables compaction.")
 	fs.BoolVar(&c.NoStream, "no-stream", false, "disable streaming; print once complete")
 	fs.BoolVar(&c.Yolo, "yolo", false, "skip all confirmation prompts for destructive tools")
 	fs.StringVar(&c.Prompt, "p", "", "one-shot prompt (alias for --prompt)")

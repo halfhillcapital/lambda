@@ -1,0 +1,262 @@
+package tools
+
+import (
+	"bufio"
+	"context"
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"path"
+	"path/filepath"
+	"regexp"
+	"slices"
+	"sort"
+	"strings"
+)
+
+const (
+	grepDefaultMaxResults = 100
+	grepMaxResults        = 2000
+	grepMaxLineLen        = 500
+	grepMaxFileSize       = 5 * 1024 * 1024
+	grepBinaryProbeBytes  = 8 * 1024
+	globDefaultMaxResults = 1000
+	globMaxResults        = 10000
+)
+
+// skipDirs are directory basenames not descended into during grep/glob walks.
+// They match anywhere except the explicit root, so the model can still target
+// them by passing path explicitly (e.g. path="node_modules/foo").
+var skipDirs = map[string]bool{
+	".git":         true,
+	"node_modules": true,
+	"vendor":       true,
+}
+
+// matchPath matches pattern against p with doublestar (`**`) semantics.
+// If pattern contains no '/', it matches against the basename of p only
+// (recursive). Otherwise it matches against the full forward-slash path.
+func matchPath(pattern, p string) (bool, error) {
+	pattern = filepath.ToSlash(pattern)
+	p = filepath.ToSlash(p)
+	if !strings.Contains(pattern, "/") {
+		return matchSegments(strings.Split(pattern, "/"), []string{path.Base(p)})
+	}
+	return matchSegments(strings.Split(pattern, "/"), strings.Split(p, "/"))
+}
+
+// matchSegments matches a pattern split into / segments against a target
+// split into / segments. The "**" segment matches zero or more target segments.
+func matchSegments(pat, target []string) (bool, error) {
+	for len(pat) > 0 {
+		seg := pat[0]
+		if seg == "**" {
+			if len(pat) == 1 {
+				return true, nil
+			}
+			for i := 0; i <= len(target); i++ {
+				ok, err := matchSegments(pat[1:], target[i:])
+				if err != nil {
+					return false, err
+				}
+				if ok {
+					return true, nil
+				}
+			}
+			return false, nil
+		}
+		if len(target) == 0 {
+			return false, nil
+		}
+		ok, err := path.Match(seg, target[0])
+		if err != nil {
+			return false, err
+		}
+		if !ok {
+			return false, nil
+		}
+		pat, target = pat[1:], target[1:]
+	}
+	return len(target) == 0, nil
+}
+
+func doGlob(ctx context.Context, pattern, root string, maxResults int) (string, error) {
+	if pattern == "" {
+		return "", &schemaError{err: errors.New("pattern is required")}
+	}
+	// Validate pattern syntax up front.
+	if _, err := matchPath(pattern, "x"); err != nil {
+		return "", &schemaError{err: fmt.Errorf("invalid glob pattern: %v", err)}
+	}
+	if root == "" {
+		root = "."
+	}
+	if _, err := os.Stat(root); err != nil {
+		return "", err
+	}
+	if maxResults <= 0 {
+		maxResults = globDefaultMaxResults
+	}
+	if maxResults > globMaxResults {
+		maxResults = globMaxResults
+	}
+
+	var matches []string
+	truncated := false
+	walkErr := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if ctx.Err() != nil {
+			return filepath.SkipAll
+		}
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if p != root && skipDirs[d.Name()] {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		rel, err := filepath.Rel(root, p)
+		if err != nil || rel == "." {
+			rel = filepath.Base(p)
+		}
+		ok, err := matchPath(pattern, rel)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return nil
+		}
+		matches = append(matches, filepath.ToSlash(rel))
+		if len(matches) >= maxResults {
+			truncated = true
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	if walkErr != nil {
+		return "", walkErr
+	}
+	if len(matches) == 0 {
+		return "(no matches)", nil
+	}
+	sort.Strings(matches)
+	out := strings.Join(matches, "\n")
+	if truncated {
+		out += fmt.Sprintf("\n… (truncated to first %d matches)", maxResults)
+	}
+	return out, nil
+}
+
+func doGrep(ctx context.Context, pattern, root, glob string, maxResults int, caseInsensitive bool) (string, error) {
+	if pattern == "" {
+		return "", &schemaError{err: errors.New("pattern is required")}
+	}
+	expr := pattern
+	if caseInsensitive {
+		expr = "(?i)" + expr
+	}
+	re, err := regexp.Compile(expr)
+	if err != nil {
+		return "", &schemaError{err: fmt.Errorf("invalid regex: %v", err)}
+	}
+	if glob != "" {
+		if _, err := matchPath(glob, "x"); err != nil {
+			return "", &schemaError{err: fmt.Errorf("invalid glob filter: %v", err)}
+		}
+	}
+	if root == "" {
+		root = "."
+	}
+	if _, err := os.Stat(root); err != nil {
+		return "", err
+	}
+	if maxResults <= 0 {
+		maxResults = grepDefaultMaxResults
+	}
+	if maxResults > grepMaxResults {
+		maxResults = grepMaxResults
+	}
+
+	var matches []string
+	truncated := false
+	walkErr := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if ctx.Err() != nil {
+			return filepath.SkipAll
+		}
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if p != root && skipDirs[d.Name()] {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		rel, err := filepath.Rel(root, p)
+		if err != nil || rel == "." {
+			rel = filepath.Base(p)
+		}
+		if glob != "" {
+			ok, _ := matchPath(glob, rel)
+			if !ok {
+				return nil
+			}
+		}
+		info, err := d.Info()
+		if err != nil || info.Size() > grepMaxFileSize {
+			return nil
+		}
+		grepFile(p, rel, re, &matches, maxResults, &truncated)
+		if truncated {
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	if walkErr != nil {
+		return "", walkErr
+	}
+	if len(matches) == 0 {
+		return "(no matches)", nil
+	}
+	out := strings.Join(matches, "\n")
+	if truncated {
+		out += fmt.Sprintf("\n… (truncated to first %d matches)", maxResults)
+	}
+	return out, nil
+}
+
+func grepFile(path, rel string, re *regexp.Regexp, matches *[]string, maxResults int, truncated *bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	br := bufio.NewReader(f)
+	if head, _ := br.Peek(grepBinaryProbeBytes); isBinary(head) {
+		return
+	}
+	scanner := bufio.NewScanner(br)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	lineNo := 0
+	for scanner.Scan() {
+		lineNo++
+		line := scanner.Text()
+		if !re.MatchString(line) {
+			continue
+		}
+		if len(line) > grepMaxLineLen {
+			line = line[:grepMaxLineLen] + "…"
+		}
+		*matches = append(*matches, fmt.Sprintf("%s:%d:%s", filepath.ToSlash(rel), lineNo, line))
+		if len(*matches) >= maxResults {
+			*truncated = true
+			return
+		}
+	}
+}
+
+func isBinary(b []byte) bool {
+	return slices.Contains(b, 0)
+}

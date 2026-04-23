@@ -1,5 +1,5 @@
 // Package tools implements the tool schema registry and dispatcher used by
-// the agent: read_file, write_file, edit_file, list_dir, and bash.
+// the agent: read_file, write_file, edit_file, list_dir, grep, glob, and bash.
 package tools
 
 import (
@@ -26,6 +26,8 @@ const (
 	WriteFile Name = "write_file"
 	EditFile  Name = "edit_file"
 	ListDir   Name = "list_dir"
+	Grep      Name = "grep"
+	Glob      Name = "glob"
 	Bash      Name = "bash"
 )
 
@@ -40,7 +42,7 @@ func (n Name) IsDestructive() bool {
 	}
 }
 
-// Schemas returns the OpenAI tool definitions for all five tools.
+// Schemas returns the OpenAI tool definitions for every built-in tool.
 func Schemas() []openai.ChatCompletionToolParam {
 	mk := func(name, desc string, params shared.FunctionParameters) openai.ChatCompletionToolParam {
 		return openai.ChatCompletionToolParam{
@@ -56,7 +58,7 @@ func Schemas() []openai.ChatCompletionToolParam {
 	intProp := func(d string) map[string]any { return map[string]any{"type": "integer", "description": d} }
 
 	return []openai.ChatCompletionToolParam{
-		mk(string(ReadFile), "Read the contents of a file. Returns the file text.", shared.FunctionParameters{
+		mk(string(ReadFile), "Read the contents of a file. Returns the file text, truncated to ~256KB with a notice if the file is larger (use bash with sed/awk/head/tail for slicing larger files).", shared.FunctionParameters{
 			"type": "object",
 			"properties": map[string]any{
 				"path": strProp("Path to the file, absolute or relative to the agent's working directory."),
@@ -87,6 +89,26 @@ func Schemas() []openai.ChatCompletionToolParam {
 				"path": strProp("Directory path. Defaults to the current working directory if omitted."),
 			},
 		}),
+		mk(string(Grep), "Search file contents for a regex pattern (RE2 syntax). Returns matching lines as path:line:text. Skips .git, node_modules, vendor, and binary files. Prefer over `bash grep` — faster and budget-aware.", shared.FunctionParameters{
+			"type": "object",
+			"properties": map[string]any{
+				"pattern":          strProp("Regex pattern (RE2 syntax)."),
+				"path":             strProp("Root directory to search. Defaults to '.'"),
+				"glob":             strProp("Optional file filter, e.g. '*.go'. If it has no '/', matches against the basename recursively; otherwise full-path match with ** support."),
+				"max_results":      intProp("Max matches to return. Defaults to 100, capped at 2000."),
+				"case_insensitive": boolProp("Case-insensitive match. Default false."),
+			},
+			"required": []string{"pattern"},
+		}),
+		mk(string(Glob), "Find files matching a glob pattern. Supports ** for recursive matching. A pattern with no '/' is matched against the basename recursively (so 'config.go' finds it anywhere). Skips .git, node_modules, vendor. Prefer over `bash find`.", shared.FunctionParameters{
+			"type": "object",
+			"properties": map[string]any{
+				"pattern":     strProp("Glob pattern, e.g. '**/*.go', 'cmd/**/*.go', or 'config.go'."),
+				"path":        strProp("Root directory. Defaults to '.'"),
+				"max_results": intProp("Max paths to return. Defaults to 1000."),
+			},
+			"required": []string{"pattern"},
+		}),
 		mk(string(Bash), "Run a bash command non-interactively (empty stdin) and return its combined stdout+stderr. Bash is required on PATH (git bash on Windows). Default timeout 120s.", shared.FunctionParameters{
 			"type": "object",
 			"properties": map[string]any{
@@ -98,12 +120,24 @@ func Schemas() []openai.ChatCompletionToolParam {
 	}
 }
 
+// schemaError marks errors caused by malformed arguments or unknown tool names —
+// the model should fix its call rather than retry. Execute formats them with a
+// distinct "schema error:" prefix.
+type schemaError struct{ err error }
+
+func (e *schemaError) Error() string { return e.err.Error() }
+func (e *schemaError) Unwrap() error { return e.err }
+
 // Execute dispatches a tool call by name. rawArgs is the raw JSON string from the model.
 // It returns a textual result to feed back to the model. Errors are never returned —
 // error conditions are reported as the tool result so the model can recover.
 func Execute(ctx context.Context, name, rawArgs string) string {
 	res, err := executeInner(ctx, name, rawArgs)
 	if err != nil {
+		var se *schemaError
+		if errors.As(err, &se) {
+			return "schema error: " + err.Error()
+		}
 		return "error: " + err.Error()
 	}
 	return res
@@ -147,6 +181,28 @@ func executeInner(ctx context.Context, name, rawArgs string) (string, error) {
 			return "", err
 		}
 		return doListDir(a.Path)
+	case Grep:
+		var a struct {
+			Pattern         string `json:"pattern"`
+			Path            string `json:"path"`
+			Glob            string `json:"glob"`
+			MaxResults      int    `json:"max_results"`
+			CaseInsensitive bool   `json:"case_insensitive"`
+		}
+		if err := decodeArgs(rawArgs, &a); err != nil {
+			return "", err
+		}
+		return doGrep(ctx, a.Pattern, a.Path, a.Glob, a.MaxResults, a.CaseInsensitive)
+	case Glob:
+		var a struct {
+			Pattern    string `json:"pattern"`
+			Path       string `json:"path"`
+			MaxResults int    `json:"max_results"`
+		}
+		if err := decodeArgs(rawArgs, &a); err != nil {
+			return "", err
+		}
+		return doGlob(ctx, a.Pattern, a.Path, a.MaxResults)
 	case Bash:
 		var a struct {
 			Command        string `json:"command"`
@@ -157,7 +213,7 @@ func executeInner(ctx context.Context, name, rawArgs string) (string, error) {
 		}
 		return doBash(ctx, a.Command, a.TimeoutSeconds)
 	default:
-		return "", fmt.Errorf("unknown tool %q", name)
+		return "", &schemaError{err: fmt.Errorf("unknown tool %q", name)}
 	}
 }
 
@@ -167,10 +223,12 @@ func decodeArgs(raw string, into any) error {
 		raw = "{}"
 	}
 	if err := json.Unmarshal([]byte(raw), into); err != nil {
-		return fmt.Errorf("malformed JSON arguments: %v", err)
+		return &schemaError{err: fmt.Errorf("malformed JSON arguments: %v", err)}
 	}
 	return nil
 }
+
+const readFileMaxBytes = 256 * 1024
 
 func doReadFile(path string) (string, error) {
 	if path == "" {
@@ -180,7 +238,14 @@ func doReadFile(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return string(b), nil
+	if len(b) <= readFileMaxBytes {
+		return string(b), nil
+	}
+	s := string(b[:readFileMaxBytes])
+	if idx := strings.LastIndexByte(s, '\n'); idx > 0 {
+		s = s[:idx]
+	}
+	return fmt.Sprintf("%s\n… (file is %d bytes, truncated to first %d)", s, len(b), len(s)), nil
 }
 
 func doWriteFile(path, content string) (string, error) {
