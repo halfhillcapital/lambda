@@ -15,8 +15,10 @@ import (
 )
 
 // runOneShot runs a single turn, prints assistant content to stdout and
-// tool activity to stderr, and exits when the turn completes.
-func runOneShot(ctx context.Context, cfg *config.Config, systemPrompt, userInput string) error {
+// tool activity to stderr, and returns the process exit code when the turn
+// completes. It never calls os.Exit directly so the caller's deferred
+// cleanup (notably worktree teardown) runs on every path.
+func runOneShot(ctx context.Context, cfg *config.Config, systemPrompt string, pol agent.Policy, userInput string) int {
 	stderrIsTTY := term.IsTerminal(int(os.Stderr.Fd()))
 
 	// In non-interactive mode we cannot prompt; the agent treats all destructive
@@ -26,7 +28,7 @@ func runOneShot(ctx context.Context, cfg *config.Config, systemPrompt, userInput
 		return agent.DecisionDeny
 	}
 
-	a := agent.New(cfg, systemPrompt, deny)
+	a := agent.New(cfg, systemPrompt, pol, deny)
 
 	events := make(chan agent.Event, 64)
 	go a.Run(ctx, userInput, events)
@@ -69,12 +71,9 @@ func runOneShot(ctx context.Context, cfg *config.Config, systemPrompt, userInput
 	}
 	// SIGINT/SIGTERM came in during the turn — use the conventional 130.
 	if errors.Is(ctx.Err(), context.Canceled) {
-		os.Exit(130)
+		return 130
 	}
-	if exitCode != 0 {
-		os.Exit(exitCode)
-	}
-	return nil
+	return exitCode
 }
 
 func firstLine(s string) string {

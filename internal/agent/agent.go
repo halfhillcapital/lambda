@@ -67,6 +67,7 @@ type Agent struct {
 	maxSteps  int
 	noStream  bool
 	yolo      bool
+	policy    Policy
 	confirmer Confirmer
 
 	allowedTools map[string]bool
@@ -85,12 +86,15 @@ type Agent struct {
 // earlier compaction rather than blowing the context window).
 const defaultCharsPerToken = 3.5
 
-func New(cfg *config.Config, systemPrompt string, confirmer Confirmer) *Agent {
+func New(cfg *config.Config, systemPrompt string, pol Policy, confirmer Confirmer) *Agent {
 	client := openai.NewClient(
 		option.WithBaseURL(cfg.BaseURL),
 		option.WithAPIKey(cfg.APIKey),
 		option.WithHTTPClient(newHTTPClient()),
 	)
+	if pol == nil {
+		pol = func(name, rawArgs string) Verdict { return Prompt }
+	}
 	return &Agent{
 		client:   client,
 		model:    cfg.Model,
@@ -99,6 +103,7 @@ func New(cfg *config.Config, systemPrompt string, confirmer Confirmer) *Agent {
 		maxSteps: cfg.MaxSteps,
 		noStream: cfg.NoStream,
 		yolo:     cfg.Yolo,
+		policy:   pol,
 		confirmer: func(ctx context.Context, name, args string) Decision {
 			if cfg.Yolo {
 				return DecisionAllow
@@ -245,15 +250,24 @@ func (a *Agent) handleToolCall(ctx context.Context, tc openai.ChatCompletionMess
 	args := tc.Function.Arguments
 
 	if tools.Name(name).IsDestructive() && !a.alwaysAll && !a.allowedTools[name] {
-		switch a.confirmer(ctx, name, args) {
-		case DecisionDeny:
+		switch a.policy(name, args) {
+		case AutoAllow:
+			// Skip the user prompt entirely.
+		case AutoDeny:
 			emit(ctx, out, EventToolDenied{ID: tc.ID, Name: name})
-			a.messages = append(a.messages, openai.ToolMessage("user denied this tool call", tc.ID))
+			a.messages = append(a.messages, openai.ToolMessage("policy denied this tool call", tc.ID))
 			return true
-		case DecisionAlwaysTool:
-			a.allowedTools[name] = true
-		case DecisionAlwaysAll:
-			a.alwaysAll = true
+		default:
+			switch a.confirmer(ctx, name, args) {
+			case DecisionDeny:
+				emit(ctx, out, EventToolDenied{ID: tc.ID, Name: name})
+				a.messages = append(a.messages, openai.ToolMessage("user denied this tool call", tc.ID))
+				return true
+			case DecisionAlwaysTool:
+				a.allowedTools[name] = true
+			case DecisionAlwaysAll:
+				a.alwaysAll = true
+			}
 		}
 	}
 

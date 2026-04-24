@@ -19,6 +19,7 @@ type Config struct {
 	MaxContextTokens int
 	NoStream         bool
 	Yolo             bool
+	NoWorktree       bool
 	Prompt           string // -p one-shot prompt
 	Args             []string
 }
@@ -64,6 +65,7 @@ Examples:
 	fs.IntVar(&c.MaxContextTokens, "max-context-tokens", 100_000, "soft cap on prompt tokens; oldest turns are dropped beyond this. 0 disables compaction. Tracked against actual prompt_tokens returned by the server when available; falls back to a char-based estimate otherwise.")
 	fs.BoolVar(&c.NoStream, "no-stream", false, "disable streaming; print once complete")
 	fs.BoolVar(&c.Yolo, "yolo", false, "skip all confirmation prompts for destructive tools")
+	fs.BoolVar(&c.NoWorktree, "no-worktree", false, "run in the current checkout instead of an isolated git worktree")
 	fs.StringVar(&c.Prompt, "p", "", "one-shot prompt (alias for --prompt)")
 	fs.StringVar(&c.Prompt, "prompt", "", "one-shot prompt")
 
@@ -80,6 +82,9 @@ Examples:
 	}
 	if c.Model == "" {
 		c.Model = os.Getenv("OPENAI_MODEL")
+	}
+	if !c.NoWorktree && envTrue("LAMBDA_NO_WORKTREE") {
+		c.NoWorktree = true
 	}
 
 	if c.Model == "" {
@@ -98,4 +103,13 @@ func envOr(key, def string) string {
 		return v
 	}
 	return def
+}
+
+func envTrue(key string) bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	switch v {
+	case "", "0", "false", "no", "off":
+		return false
+	}
+	return true
 }

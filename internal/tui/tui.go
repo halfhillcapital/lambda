@@ -96,7 +96,7 @@ type uiModel struct {
 	errMsg        string
 }
 
-func newUIModel(cfg *config.Config, systemPrompt string) (*uiModel, error) {
+func newUIModel(cfg *config.Config, systemPrompt string, pol agent.Policy) (*uiModel, error) {
 	m := &uiModel{
 		cfg:     cfg,
 		askCh:   make(chan confirmRequest, 1),
@@ -116,7 +116,7 @@ func newUIModel(cfg *config.Config, systemPrompt string) (*uiModel, error) {
 			return agent.DecisionDeny
 		}
 	}
-	m.agent = agent.New(cfg, systemPrompt, confirmer)
+	m.agent = agent.New(cfg, systemPrompt, pol, confirmer)
 
 	ta := textarea.New()
 	ta.Placeholder = "Ask anything — Enter to send, Ctrl+J for newline, /help for commands, Ctrl+C to quit"
@@ -604,8 +604,8 @@ func firstN[T any](s []T, n int) []T {
 }
 
 // Run starts the Bubble Tea REPL. It blocks until the program exits.
-func Run(ctx context.Context, cfg *config.Config, systemPrompt string) error {
-	m, err := newUIModel(cfg, systemPrompt)
+func Run(ctx context.Context, cfg *config.Config, systemPrompt string, pol agent.Policy) error {
+	m, err := newUIModel(cfg, systemPrompt, pol)
 	if err != nil {
 		return err
 	}
