@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -332,7 +333,83 @@ func TestIsBinary(t *testing.T) {
 	}
 }
 
+func TestDoGlobRespectsGitignore(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	root := t.TempDir()
+	mustTree(t, root, map[string]string{
+		".gitignore":         "dist/\nbuild/\n__pycache__/\n*.pyc\n",
+		"main.go":            "",
+		"src/lib.go":         "",
+		"dist/bundle.js":     "",
+		"build/out.o":        "",
+		"__pycache__/m.pyc":  "",
+		"cache.pyc":          "",
+		"keep/README.md":     "",
+	})
+	mustGitInit(t, root)
+
+	s, err := doGlob(context.Background(), "**/*", root, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"main.go", "src/lib.go", "keep/README.md", ".gitignore"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("missing %q:\n%s", want, s)
+		}
+	}
+	for _, unwant := range []string{"dist/", "build/", "__pycache__/", "cache.pyc"} {
+		if strings.Contains(s, unwant) {
+			t.Errorf("should exclude %q (gitignored):\n%s", unwant, s)
+		}
+	}
+}
+
+func TestDoGrepRespectsGitignore(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	root := t.TempDir()
+	mustTree(t, root, map[string]string{
+		".gitignore":      "dist/\ntarget/\n",
+		"src/a.go":        "package main\nfunc Hello() {}\n",
+		"dist/bundle.js":  "function Hello() {}\n",
+		"target/out.rs":   "fn Hello() {}\n",
+	})
+	mustGitInit(t, root)
+
+	s, err := doGrep(context.Background(), "Hello", root, "", 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(s, "src/a.go") {
+		t.Errorf("missing src/a.go match:\n%s", s)
+	}
+	if strings.Contains(s, "dist/") {
+		t.Errorf("should skip dist/ (gitignored):\n%s", s)
+	}
+	if strings.Contains(s, "target/") {
+		t.Errorf("should skip target/ (gitignored):\n%s", s)
+	}
+}
+
 // --- helpers ---
+
+func mustGitInit(t *testing.T, root string) {
+	t.Helper()
+	for _, args := range [][]string{
+		{"init", "-q", "-b", "main"},
+		{"config", "user.email", "test@example.com"},
+		{"config", "user.name", "test"},
+		{"config", "commit.gpgsign", "false"},
+	} {
+		cmd := exec.Command("git", append([]string{"-C", root}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+}
 
 func mustTree(t *testing.T, root string, files map[string]string) {
 	t.Helper()

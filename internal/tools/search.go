@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -26,13 +27,74 @@ const (
 	globMaxResults        = 10000
 )
 
-// skipDirs are directory basenames not descended into during grep/glob walks.
-// They match anywhere except the explicit root, so the model can still target
-// them by passing path explicitly (e.g. path="node_modules/foo").
+// skipDirs are directory basenames not descended into during the filesystem
+// fallback walk. They match anywhere except the explicit root, so the model
+// can still target them by passing path explicitly (e.g.
+// path="node_modules/foo"). When root is inside a git work tree, listing
+// goes through `git ls-files -co --exclude-standard` and .gitignore takes
+// over instead.
 var skipDirs = map[string]bool{
 	".git":         true,
 	"node_modules": true,
 	"vendor":       true,
+}
+
+// listCandidates returns candidate file paths under root as forward-slash
+// relative paths. When root is inside a git work tree and `git` is on PATH,
+// it uses `git ls-files -co --exclude-standard` so .gitignore (and
+// .git/info/exclude and global excludes) are respected. Otherwise it walks
+// the filesystem and skips entries in skipDirs.
+func listCandidates(ctx context.Context, root string) ([]string, error) {
+	if files, ok := gitListFiles(ctx, root); ok {
+		return files, nil
+	}
+	return fsListFiles(ctx, root)
+}
+
+func gitListFiles(ctx context.Context, root string) ([]string, bool) {
+	probe := exec.CommandContext(ctx, "git", "-C", root, "rev-parse", "--is-inside-work-tree")
+	out, err := probe.Output()
+	if err != nil || strings.TrimSpace(string(out)) != "true" {
+		return nil, false
+	}
+	cmd := exec.CommandContext(ctx, "git", "-C", root, "ls-files", "-co", "--exclude-standard", "-z")
+	out, err = cmd.Output()
+	if err != nil {
+		return nil, false
+	}
+	var files []string
+	for rel := range bytes.SplitSeq(out, []byte{0}) {
+		if len(rel) == 0 {
+			continue
+		}
+		files = append(files, string(rel))
+	}
+	return files, true
+}
+
+func fsListFiles(ctx context.Context, root string) ([]string, error) {
+	var files []string
+	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if ctx.Err() != nil {
+			return filepath.SkipAll
+		}
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if p != root && skipDirs[d.Name()] {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		rel, err := filepath.Rel(root, p)
+		if err != nil || rel == "." {
+			rel = filepath.Base(p)
+		}
+		files = append(files, filepath.ToSlash(rel))
+		return nil
+	})
+	return files, err
 }
 
 // matchPath matches pattern against p with doublestar (`**`) semantics.
@@ -103,41 +165,29 @@ func doGlob(ctx context.Context, pattern, root string, maxResults int) (string, 
 		maxResults = globMaxResults
 	}
 
+	files, err := listCandidates(ctx, root)
+	if err != nil {
+		return "", err
+	}
+
 	var matches []string
 	truncated := false
-	walkErr := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+	for _, rel := range files {
 		if ctx.Err() != nil {
-			return filepath.SkipAll
-		}
-		if err != nil {
-			return nil
-		}
-		if d.IsDir() {
-			if p != root && skipDirs[d.Name()] {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		rel, err := filepath.Rel(root, p)
-		if err != nil || rel == "." {
-			rel = filepath.Base(p)
+			break
 		}
 		ok, err := matchPath(pattern, rel)
 		if err != nil {
-			return err
+			return "", err
 		}
 		if !ok {
-			return nil
+			continue
 		}
-		matches = append(matches, filepath.ToSlash(rel))
+		matches = append(matches, rel)
 		if len(matches) >= maxResults {
 			truncated = true
-			return filepath.SkipAll
+			break
 		}
-		return nil
-	})
-	if walkErr != nil {
-		return "", walkErr
 	}
 	if len(matches) == 0 {
 		return "(no matches)", nil
@@ -180,43 +230,32 @@ func doGrep(ctx context.Context, pattern, root, glob string, maxResults int, cas
 		maxResults = grepMaxResults
 	}
 
+	files, err := listCandidates(ctx, root)
+	if err != nil {
+		return "", err
+	}
+
 	var matches []string
 	truncated := false
-	walkErr := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+	for _, rel := range files {
 		if ctx.Err() != nil {
-			return filepath.SkipAll
-		}
-		if err != nil {
-			return nil
-		}
-		if d.IsDir() {
-			if p != root && skipDirs[d.Name()] {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		rel, err := filepath.Rel(root, p)
-		if err != nil || rel == "." {
-			rel = filepath.Base(p)
+			break
 		}
 		if glob != "" {
 			ok, _ := matchPath(glob, rel)
 			if !ok {
-				return nil
+				continue
 			}
 		}
-		info, err := d.Info()
-		if err != nil || info.Size() > grepMaxFileSize {
-			return nil
+		p := filepath.Join(root, filepath.FromSlash(rel))
+		info, err := os.Stat(p)
+		if err != nil || info.IsDir() || info.Size() > grepMaxFileSize {
+			continue
 		}
 		grepFile(p, rel, re, &matches, maxResults, &truncated)
 		if truncated {
-			return filepath.SkipAll
+			break
 		}
-		return nil
-	})
-	if walkErr != nil {
-		return "", walkErr
 	}
 	if len(matches) == 0 {
 		return "(no matches)", nil
