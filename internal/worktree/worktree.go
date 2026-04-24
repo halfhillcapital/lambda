@@ -49,16 +49,11 @@ func Start(ctx context.Context, cwd string, enabled bool) (*Session, error) {
 	if !enabled {
 		return s, nil
 	}
-	root, ok := repoRoot(ctx, cwd)
+	root, sha, gitDir, ok := probeRepo(ctx, cwd)
 	if !ok {
+		// Not a git work tree, or an empty repo (no HEAD to root the worktree at).
 		return s, nil
 	}
-	sha, ok := headSHA(ctx, cwd)
-	if !ok {
-		// Empty repo (no commits) — git worktree add requires a commit.
-		return s, nil
-	}
-	gitDir, _ := commonGitDir(ctx, cwd)
 
 	ts := time.Now().Format("20060102-150405")
 	branch := "lambda/" + ts
@@ -124,32 +119,29 @@ func writeIndented(w io.Writer, header string, body []byte) {
 
 // --- git helpers ---
 
-func repoRoot(ctx context.Context, cwd string) (string, bool) {
-	out, err := runGitOutput(ctx, cwd, "rev-parse", "--show-toplevel")
+// probeRepo queries repo toplevel, HEAD sha, and the common git dir in a
+// single `git rev-parse` invocation. Returns ok=false if cwd isn't a git
+// work tree or the repo has no HEAD (empty repo). gitDir is resolved
+// against cwd when git prints a relative path.
+func probeRepo(ctx context.Context, cwd string) (root, sha, gitDir string, ok bool) {
+	out, err := runGitOutput(ctx, cwd, "rev-parse", "--show-toplevel", "HEAD", "--git-common-dir")
 	if err != nil {
-		return "", false
+		return "", "", "", false
 	}
-	return strings.TrimSpace(string(out)), true
-}
-
-func commonGitDir(ctx context.Context, cwd string) (string, bool) {
-	out, err := runGitOutput(ctx, cwd, "rev-parse", "--git-common-dir")
-	if err != nil {
-		return "", false
+	lines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
+	if len(lines) < 3 {
+		return "", "", "", false
 	}
-	p := strings.TrimSpace(string(out))
-	if !filepath.IsAbs(p) {
-		p = filepath.Join(cwd, p)
+	root = strings.TrimSpace(lines[0])
+	sha = strings.TrimSpace(lines[1])
+	gitDir = strings.TrimSpace(lines[2])
+	if gitDir != "" && !filepath.IsAbs(gitDir) {
+		gitDir = filepath.Join(cwd, gitDir)
 	}
-	return p, true
-}
-
-func headSHA(ctx context.Context, cwd string) (string, bool) {
-	out, err := runGitOutput(ctx, cwd, "rev-parse", "HEAD")
-	if err != nil {
-		return "", false
+	if root == "" || sha == "" {
+		return "", "", "", false
 	}
-	return strings.TrimSpace(string(out)), true
+	return root, sha, gitDir, true
 }
 
 // isDirty reports whether cwd has any working-tree or index changes.

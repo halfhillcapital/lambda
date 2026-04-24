@@ -23,7 +23,6 @@ const (
 	// AutoAllow means the tool call is safe enough to run without asking.
 	AutoAllow
 	// AutoDeny means the policy refuses outright, regardless of user opinion.
-	// Reserved for future use; the current rules never produce it.
 	AutoDeny
 )
 
@@ -172,6 +171,12 @@ func hasShellEscapes(cmd string) bool {
 func splitPipeline(cmd string) []string {
 	var segs []string
 	var buf strings.Builder
+	flush := func() {
+		if s := strings.TrimSpace(buf.String()); s != "" {
+			segs = append(segs, s)
+		}
+		buf.Reset()
+	}
 	inSingle, inDouble := false, false
 	i := 0
 	for i < len(cmd) {
@@ -189,28 +194,18 @@ func splitPipeline(cmd string) []string {
 			buf.WriteByte(c)
 			i++
 		case i+1 < len(cmd) && (cmd[i:i+2] == "&&" || cmd[i:i+2] == "||"):
-			segs = append(segs, strings.TrimSpace(buf.String()))
-			buf.Reset()
+			flush()
 			i += 2
 		case c == '|':
-			segs = append(segs, strings.TrimSpace(buf.String()))
-			buf.Reset()
+			flush()
 			i++
 		default:
 			buf.WriteByte(c)
 			i++
 		}
 	}
-	if buf.Len() > 0 {
-		segs = append(segs, strings.TrimSpace(buf.String()))
-	}
-	out := segs[:0]
-	for _, s := range segs {
-		if s != "" {
-			out = append(out, s)
-		}
-	}
-	return out
+	flush()
+	return segs
 }
 
 // segmentIsSafe checks one pipeline segment: argv[0] in allowlist, no
@@ -227,11 +222,15 @@ func segmentIsSafe(seg string) bool {
 	if strings.Contains(argv0, "=") {
 		return false
 	}
-	if deny, ok := argDenyRules[argv0]; ok {
+	exact := argDenyExact[argv0]
+	prefixes := argDenyPrefix[argv0]
+	if exact != nil || prefixes != nil {
 		for _, arg := range tokens[1:] {
-			for _, bad := range deny {
-				// Match both `--flag` and `--flag=value` for long options.
-				if arg == bad || (strings.HasPrefix(bad, "--") && strings.HasPrefix(arg, bad+"=")) {
+			if exact[arg] {
+				return false
+			}
+			for _, p := range prefixes {
+				if strings.HasPrefix(arg, p) {
 					return false
 				}
 			}
@@ -381,9 +380,15 @@ var cargoSafeSubs = map[string]bool{
 	"version": true, "help": true,
 }
 
-// argDenyRules trip a command out of the allowlist when any listed flag
-// appears among its args (regardless of position).
-var argDenyRules = map[string][]string{
-	"sed":  {"-i", "--in-place"},
-	"find": {"-exec", "-execdir", "-delete", "-ok", "-okdir", "-fprint", "-fprintf", "-fprint0"},
+// argDenyExact trips a command out of the allowlist when any arg matches
+// a listed flag exactly.
+var argDenyExact = map[string]map[string]bool{
+	"sed":  {"-i": true, "--in-place": true},
+	"find": {"-exec": true, "-execdir": true, "-delete": true, "-ok": true, "-okdir": true, "-fprint": true, "-fprintf": true, "-fprint0": true},
+}
+
+// argDenyPrefix trips a command when any arg starts with one of these
+// prefixes — used for long options that take a `=value` form.
+var argDenyPrefix = map[string][]string{
+	"sed": {"--in-place="},
 }

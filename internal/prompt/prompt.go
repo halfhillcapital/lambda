@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"sync"
 )
 
 const basePrompt = `You are lambda, a terse CLI coding assistant running in a terminal on the user's machine. You have tools to read and modify files and to run bash. Use them proactively to answer questions and complete tasks — don't ask permission, just act.
@@ -19,16 +20,23 @@ Guidelines:
 
 // Build assembles the system prompt, embedding environment context (cwd, OS, git status).
 func Build(cwd string) string {
+	var uname, gitStatus string
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); uname = shellOut("uname", "-a") }()
+	go func() { defer wg.Done(); gitStatus = shellOut("git", "status", "--short", "--branch") }()
+	wg.Wait()
+
 	var b strings.Builder
 	b.WriteString(basePrompt)
 	b.WriteString("\n\n<environment>\n")
 	fmt.Fprintf(&b, "cwd: %s\n", cwd)
 	fmt.Fprintf(&b, "os: %s/%s\n", runtime.GOOS, runtime.GOARCH)
-	if u := shellOut("uname", "-a"); u != "" {
-		fmt.Fprintf(&b, "uname: %s\n", u)
+	if uname != "" {
+		fmt.Fprintf(&b, "uname: %s\n", uname)
 	}
-	if gs := shellOut("git", "status", "--short", "--branch"); gs != "" {
-		fmt.Fprintf(&b, "git:\n%s\n", indent(truncateLines(gs, 40), "  "))
+	if gitStatus != "" {
+		fmt.Fprintf(&b, "git:\n%s\n", indent(truncateLines(gitStatus, 40), "  "))
 	}
 	b.WriteString("</environment>")
 	return b.String()

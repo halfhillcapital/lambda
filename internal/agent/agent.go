@@ -92,24 +92,16 @@ func New(cfg *config.Config, systemPrompt string, pol Policy, confirmer Confirme
 		option.WithAPIKey(cfg.APIKey),
 		option.WithHTTPClient(newHTTPClient()),
 	)
-	if pol == nil {
-		pol = func(name, rawArgs string) Verdict { return Prompt }
-	}
 	return &Agent{
-		client:   client,
-		model:    cfg.Model,
-		tools:    tools.Schemas(),
-		messages: []openai.ChatCompletionMessageParamUnion{openai.SystemMessage(systemPrompt)},
-		maxSteps: cfg.MaxSteps,
-		noStream: cfg.NoStream,
-		yolo:     cfg.Yolo,
-		policy:   pol,
-		confirmer: func(ctx context.Context, name, args string) Decision {
-			if cfg.Yolo {
-				return DecisionAllow
-			}
-			return confirmer(ctx, name, args)
-		},
+		client:           client,
+		model:            cfg.Model,
+		tools:            tools.Schemas(),
+		messages:         []openai.ChatCompletionMessageParamUnion{openai.SystemMessage(systemPrompt)},
+		maxSteps:         cfg.MaxSteps,
+		noStream:         cfg.NoStream,
+		yolo:             cfg.Yolo,
+		policy:           pol,
+		confirmer:        confirmer,
 		allowedTools:     map[string]bool{},
 		alwaysAll:        cfg.Yolo,
 		maxContextTokens: cfg.MaxContextTokens,
@@ -250,19 +242,20 @@ func (a *Agent) handleToolCall(ctx context.Context, tc openai.ChatCompletionMess
 	args := tc.Function.Arguments
 
 	if tools.Name(name).IsDestructive() && !a.alwaysAll && !a.allowedTools[name] {
+		denied := func(reason string) bool {
+			emit(ctx, out, EventToolDenied{ID: tc.ID, Name: name})
+			a.messages = append(a.messages, openai.ToolMessage(reason+" denied this tool call", tc.ID))
+			return true
+		}
 		switch a.policy(name, args) {
 		case AutoAllow:
 			// Skip the user prompt entirely.
 		case AutoDeny:
-			emit(ctx, out, EventToolDenied{ID: tc.ID, Name: name})
-			a.messages = append(a.messages, openai.ToolMessage("policy denied this tool call", tc.ID))
-			return true
+			return denied("policy")
 		default:
 			switch a.confirmer(ctx, name, args) {
 			case DecisionDeny:
-				emit(ctx, out, EventToolDenied{ID: tc.ID, Name: name})
-				a.messages = append(a.messages, openai.ToolMessage("user denied this tool call", tc.ID))
-				return true
+				return denied("user")
 			case DecisionAlwaysTool:
 				a.allowedTools[name] = true
 			case DecisionAlwaysAll:
@@ -360,8 +353,7 @@ func isTransient(err error) bool {
 	if err == nil {
 		return false
 	}
-	var apiErr *openai.Error
-	if errors.As(err, &apiErr) {
+	if apiErr, ok := errors.AsType[*openai.Error](err); ok {
 		switch apiErr.StatusCode {
 		case 408, 429:
 			return true
@@ -374,8 +366,8 @@ func isTransient(err error) bool {
 	if errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNABORTED) {
 		return true
 	}
-	var netErr *net.OpError
-	return errors.As(err, &netErr)
+	_, ok := errors.AsType[*net.OpError](err)
+	return ok
 }
 
 // humanizeError turns transport/auth failures into messages the user can act on.
@@ -383,8 +375,7 @@ func humanizeError(err error) error {
 	if err == nil {
 		return nil
 	}
-	var apiErr *openai.Error
-	if errors.As(err, &apiErr) {
+	if apiErr, ok := errors.AsType[*openai.Error](err); ok {
 		switch apiErr.StatusCode {
 		case 401, 403:
 			return fmt.Errorf("auth failed (%d): %s — check OPENAI_API_KEY", apiErr.StatusCode, apiErr.Message)
