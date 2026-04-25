@@ -26,7 +26,13 @@ var (
 )
 
 var (
-	userStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("#87d7ff")).Bold(true)
+	userStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#87d7ff")).
+			Bold(true).
+			Border(lipgloss.ThickBorder(), false, false, false, true).
+			BorderForeground(lipgloss.Color("#87d7ff")).
+			PaddingLeft(1).
+			MarginTop(1)
 	assistantStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffffff"))
 	toolOutStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#8a8a8a"))
 	noticeStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#d7d787")).Italic(true)
@@ -461,7 +467,7 @@ func (m *uiModel) refreshViewport() {
 func (m *uiModel) renderBlock(b block) string {
 	switch b.kind {
 	case blockUser:
-		return userStyle.Render("› ") + b.text
+		return userStyle.Render(b.text)
 	case blockAssistant:
 		if b.final && m.renderer != nil {
 			if out, err := m.renderer.Render(b.text); err == nil {
