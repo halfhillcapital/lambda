@@ -87,10 +87,14 @@ type Agent struct {
 const defaultCharsPerToken = 3.5
 
 func New(cfg *config.Config, systemPrompt string, pol Policy, confirmer Confirmer) *Agent {
+	// MaxRetries(0) disables the SDK's retry loop; withTransientRetry below is
+	// the canonical retry layer (classifies errors, surfaces failures via
+	// EventError, honors ctx cancellation during backoff).
 	client := openai.NewClient(
 		option.WithBaseURL(cfg.BaseURL),
 		option.WithAPIKey(cfg.APIKey),
 		option.WithHTTPClient(newHTTPClient()),
+		option.WithMaxRetries(0),
 	)
 	return &Agent{
 		client:           client,
