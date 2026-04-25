@@ -136,6 +136,7 @@ func newUIModel(cfg *config.Config, systemPrompt string, pol agent.Policy) (*uiM
 
 	vp := viewport.New(80, 20)
 	vp.SetContent("")
+	vp.KeyMap = viewport.KeyMap{}
 	m.viewport = vp
 
 	sp := spinner.New()
