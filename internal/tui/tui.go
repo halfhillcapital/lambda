@@ -239,6 +239,7 @@ func (m *uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Catch-all for turn exit without a TurnDone/Error event (ctx cancel
 		// drops in-flight emits); TurnDone/Error already cleared turnActive.
 		if m.turnActive {
+			m.finalizeOpenThinking()
 			m.turnActive = false
 			if m.turnCancel != nil {
 				m.turnCancel()
