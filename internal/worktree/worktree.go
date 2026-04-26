@@ -73,21 +73,79 @@ func Start(ctx context.Context, cwd string, enabled bool) (*Session, error) {
 	return s, nil
 }
 
-// End finalizes the session. A clean worktree (no new commits, no dirty
-// files) is removed and its branch deleted. Otherwise it's left in place
-// and a short summary is written to w so the user can merge or discard it.
+// Action selects how Finalize handles a session that has changes.
+type Action int
+
+const (
+	// ActionKeep leaves the worktree and branch in place and writes a
+	// summary with merge/discard command hints to the caller's writer.
+	ActionKeep Action = iota
+	// ActionDiscard removes the worktree and branch and writes a single
+	// confirmation line.
+	ActionDiscard
+)
+
+// Summary returns a short body describing the session's changes (branch,
+// path, committed diff stat, uncommitted status) plus whether the session
+// has anything worth showing. A disabled session, or a session with no
+// dirty files and no advanced HEAD, returns ("", false). Intended for an
+// interactive prompt that asks the user keep-or-discard before quit.
+func (s *Session) Summary(ctx context.Context) (string, bool) {
+	if !s.Enabled {
+		return "", false
+	}
+	advanced := headAdvanced(ctx, s.Path, s.StartSHA)
+	dirty := isDirty(ctx, s.Path)
+	if !advanced && !dirty {
+		return "", false
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "branch: %s\n", s.Branch)
+	fmt.Fprintf(&b, "path:   %s", s.Path)
+	if advanced {
+		if out, err := runGitOutput(ctx, s.Path, "diff", "--stat", s.StartSHA+"..HEAD"); err == nil {
+			b.WriteString("\n")
+			writeIndented(&b, "committed:", out)
+		}
+	}
+	if dirty {
+		if out, err := runGitOutput(ctx, s.Path, "status", "--short"); err == nil {
+			b.WriteString("\n")
+			writeIndented(&b, "uncommitted:", out)
+		}
+	}
+	return b.String(), true
+}
+
+// Finalize tears down or preserves the session's worktree.
+//
+//   - Disabled session: no-op.
+//   - Clean session (no dirty files, HEAD didn't move): worktree and branch
+//     are removed and the empty .lambda/ parents cleaned up. Silent.
+//   - Has changes + ActionDiscard: same removal as clean; w gets a one-line
+//     "discarded …" notice.
+//   - Has changes + ActionKeep: worktree and branch are kept; w gets the
+//     full summary plus review/merge/discard command hints.
+//
 // Safe to call on a disabled session.
-func (s *Session) End(ctx context.Context, w io.Writer) {
+func (s *Session) Finalize(ctx context.Context, w io.Writer, action Action) {
 	if !s.Enabled {
 		return
 	}
-	dirty := isDirty(ctx, s.Path)
 	advanced := headAdvanced(ctx, s.Path, s.StartSHA)
-	if !dirty && !advanced {
-		_ = runGit(ctx, s.RepoRoot, "worktree", "remove", "--force", s.Path)
-		_ = runGit(ctx, s.RepoRoot, "branch", "-D", s.Branch)
+	dirty := isDirty(ctx, s.Path)
+	hasChanges := advanced || dirty
+
+	if !hasChanges {
+		s.removeWorktree(ctx)
 		return
 	}
+	if action == ActionDiscard {
+		s.removeWorktree(ctx)
+		fmt.Fprintf(w, "lambda: discarded session branch %s\n", s.Branch)
+		return
+	}
+
 	fmt.Fprintln(w)
 	fmt.Fprintf(w, "lambda: session left changes on branch %s\n", s.Branch)
 	fmt.Fprintf(w, "  path:   %s\n", s.Path)
@@ -104,6 +162,26 @@ func (s *Session) End(ctx context.Context, w io.Writer) {
 	fmt.Fprintf(w, "  review:  git -C %s log %s..HEAD\n", s.Path, s.StartSHA)
 	fmt.Fprintf(w, "  merge:   git merge %s\n", s.Branch)
 	fmt.Fprintf(w, "  discard: git worktree remove --force %s && git branch -D %s\n", s.Path, s.Branch)
+}
+
+// removeWorktree drops the session's worktree + branch and tries to remove
+// the now-empty .lambda/worktrees/ and .lambda/ parents. Errors are ignored:
+// non-empty parents are expected when sibling sessions are still running,
+// and the worktree/branch teardown is best-effort either way.
+//
+// On Windows a directory that's any process's cwd cannot be removed, so
+// if the caller is running with cwd inside the worktree (lambda itself
+// does this in main) we step out to the repo root first.
+func (s *Session) removeWorktree(ctx context.Context) {
+	if cwd, err := os.Getwd(); err == nil {
+		if rel, err := filepath.Rel(s.Path, cwd); err == nil && !strings.HasPrefix(rel, "..") {
+			_ = os.Chdir(s.RepoRoot)
+		}
+	}
+	_ = runGit(ctx, s.RepoRoot, "worktree", "remove", "--force", s.Path)
+	_ = runGit(ctx, s.RepoRoot, "branch", "-D", s.Branch)
+	_ = os.Remove(filepath.Join(s.RepoRoot, ".lambda", "worktrees"))
+	_ = os.Remove(filepath.Join(s.RepoRoot, ".lambda"))
 }
 
 func writeIndented(w io.Writer, header string, body []byte) {

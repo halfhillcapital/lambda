@@ -43,7 +43,12 @@ func run() int {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "lambda: worktree disabled:", err)
 	}
-	defer session.End(context.Background(), os.Stderr)
+	// Default to ActionKeep so non-interactive paths and unexpected exits
+	// preserve any work; the TUI overrides via the user's modal choice.
+	chosenAction := worktree.ActionKeep
+	defer func() {
+		session.Finalize(context.Background(), os.Stderr, chosenAction)
+	}()
 
 	if session.Enabled {
 		if err := os.Chdir(session.Path); err != nil {
@@ -65,10 +70,12 @@ func run() int {
 		return 2
 	}
 
-	if err := tui.Run(ctx, cfg, systemPrompt, pol); err != nil {
+	action, err := tui.Run(ctx, cfg, systemPrompt, pol, session)
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
+	chosenAction = action
 	return 0
 }
 

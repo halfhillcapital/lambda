@@ -91,7 +91,7 @@ func TestStartCreatesWorktreeAndExclude(t *testing.T) {
 	}
 }
 
-func TestEndCleanWorktreeIsRemovedSilently(t *testing.T) {
+func TestFinalizeCleanWorktreeIsRemovedSilently(t *testing.T) {
 	requireGit(t)
 	dir := t.TempDir()
 	initRepoWithCommit(t, dir)
@@ -101,7 +101,7 @@ func TestEndCleanWorktreeIsRemovedSilently(t *testing.T) {
 		t.Fatal(err)
 	}
 	var buf bytes.Buffer
-	s.End(context.Background(), &buf)
+	s.Finalize(context.Background(), &buf, ActionKeep)
 	if buf.Len() != 0 {
 		t.Errorf("expected silent clean teardown, got:\n%s", buf.String())
 	}
@@ -116,9 +116,13 @@ func TestEndCleanWorktreeIsRemovedSilently(t *testing.T) {
 	if strings.TrimSpace(string(out)) != "" {
 		t.Errorf("branch %q should be deleted, got:\n%s", s.Branch, out)
 	}
+	// Empty .lambda/ parents should also be gone.
+	if _, err := os.Stat(filepath.Join(dir, ".lambda")); !os.IsNotExist(err) {
+		t.Errorf(".lambda/ should be removed, got stat err=%v", err)
+	}
 }
 
-func TestEndDirtyWorktreePersists(t *testing.T) {
+func TestFinalizeKeepDirtyWorktreePersists(t *testing.T) {
 	requireGit(t)
 	dir := t.TempDir()
 	initRepoWithCommit(t, dir)
@@ -133,7 +137,7 @@ func TestEndDirtyWorktreePersists(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	s.End(context.Background(), &buf)
+	s.Finalize(context.Background(), &buf, ActionKeep)
 	out := buf.String()
 	if !strings.Contains(out, "left changes on branch "+s.Branch) {
 		t.Errorf("missing branch notice:\n%s", out)
@@ -141,12 +145,15 @@ func TestEndDirtyWorktreePersists(t *testing.T) {
 	if !strings.Contains(out, "new.txt") {
 		t.Errorf("missing status summary for new.txt:\n%s", out)
 	}
+	if !strings.Contains(out, "merge:   git merge "+s.Branch) {
+		t.Errorf("missing merge command hint:\n%s", out)
+	}
 	if _, err := os.Stat(s.Path); err != nil {
 		t.Errorf("dirty worktree should persist: %v", err)
 	}
 }
 
-func TestEndWithCommittedChangesPersists(t *testing.T) {
+func TestFinalizeKeepWithCommittedChangesPersists(t *testing.T) {
 	requireGit(t)
 	dir := t.TempDir()
 	initRepoWithCommit(t, dir)
@@ -162,7 +169,7 @@ func TestEndWithCommittedChangesPersists(t *testing.T) {
 	runGitHelper(t, s.Path, "commit", "-q", "-m", "add added.go")
 
 	var buf bytes.Buffer
-	s.End(context.Background(), &buf)
+	s.Finalize(context.Background(), &buf, ActionKeep)
 	out := buf.String()
 	if !strings.Contains(out, "committed:") {
 		t.Errorf("missing committed section:\n%s", out)
@@ -175,12 +182,132 @@ func TestEndWithCommittedChangesPersists(t *testing.T) {
 	}
 }
 
-func TestEndOnDisabledSessionIsNoop(t *testing.T) {
+func TestFinalizeDiscardRemovesWorktreeAndBranch(t *testing.T) {
+	requireGit(t)
+	dir := t.TempDir()
+	initRepoWithCommit(t, dir)
+
+	s, err := Start(context.Background(), dir, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(s.Path, "trash.txt"), []byte("nope"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	s.Finalize(context.Background(), &buf, ActionDiscard)
+
+	out := buf.String()
+	wantLine := "lambda: discarded session branch " + s.Branch + "\n"
+	if out != wantLine {
+		t.Errorf("discard output mismatch\n got: %q\nwant: %q", out, wantLine)
+	}
+	if _, err := os.Stat(s.Path); !os.IsNotExist(err) {
+		t.Errorf("discarded worktree should be gone, got stat err=%v", err)
+	}
+	branchOut, err := exec.Command("git", "-C", dir, "branch", "--list", s.Branch).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(branchOut)) != "" {
+		t.Errorf("discarded branch %q should be deleted, got:\n%s", s.Branch, branchOut)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".lambda")); !os.IsNotExist(err) {
+		t.Errorf(".lambda/ should be removed after discard, got stat err=%v", err)
+	}
+}
+
+func TestFinalizeDiscardLeavesParentsWhenSiblingExists(t *testing.T) {
+	requireGit(t)
+	dir := t.TempDir()
+	initRepoWithCommit(t, dir)
+
+	s, err := Start(context.Background(), dir, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Drop a sibling dir under .lambda/worktrees/ to simulate a concurrent session.
+	sibling := filepath.Join(dir, ".lambda", "worktrees", "sibling")
+	if err := os.MkdirAll(sibling, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	s.Finalize(context.Background(), &buf, ActionDiscard)
+
+	if _, err := os.Stat(sibling); err != nil {
+		t.Errorf("sibling worktree dir should be untouched: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".lambda")); err != nil {
+		t.Errorf(".lambda/ should persist while sibling is present: %v", err)
+	}
+}
+
+func TestSummaryReturnsBodyWhenChangesExist(t *testing.T) {
+	requireGit(t)
+	dir := t.TempDir()
+	initRepoWithCommit(t, dir)
+
+	s, err := Start(context.Background(), dir, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(s.Path, "new.txt"), []byte("hi"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	body, hasChanges := s.Summary(context.Background())
+	if !hasChanges {
+		t.Fatalf("expected hasChanges=true, body=%q", body)
+	}
+	if !strings.Contains(body, s.Branch) {
+		t.Errorf("body missing branch %q:\n%s", s.Branch, body)
+	}
+	if !strings.Contains(body, "new.txt") {
+		t.Errorf("body missing new.txt status entry:\n%s", body)
+	}
+	// No command-hint lines in the modal body.
+	for _, hint := range []string{"git merge", "git worktree remove", "review:"} {
+		if strings.Contains(body, hint) {
+			t.Errorf("body should not contain command hint %q:\n%s", hint, body)
+		}
+	}
+}
+
+func TestSummaryReturnsEmptyForCleanSession(t *testing.T) {
+	requireGit(t)
+	dir := t.TempDir()
+	initRepoWithCommit(t, dir)
+
+	s, err := Start(context.Background(), dir, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body, hasChanges := s.Summary(context.Background())
+	if hasChanges {
+		t.Errorf("clean session should report no changes, got body:\n%s", body)
+	}
+	if body != "" {
+		t.Errorf("clean session body should be empty, got: %q", body)
+	}
+}
+
+func TestSummaryReturnsEmptyForDisabledSession(t *testing.T) {
+	s := &Session{Enabled: false, OriginalCwd: t.TempDir()}
+	body, hasChanges := s.Summary(context.Background())
+	if hasChanges || body != "" {
+		t.Errorf("disabled session should report no changes; got hasChanges=%v body=%q", hasChanges, body)
+	}
+}
+
+func TestFinalizeOnDisabledSessionIsNoop(t *testing.T) {
 	s := &Session{Enabled: false, OriginalCwd: t.TempDir()}
 	var buf bytes.Buffer
-	s.End(context.Background(), &buf)
+	s.Finalize(context.Background(), &buf, ActionDiscard)
 	if buf.Len() != 0 {
-		t.Errorf("disabled End should be silent, got: %s", buf.String())
+		t.Errorf("disabled Finalize should be silent, got: %s", buf.String())
 	}
 }
 

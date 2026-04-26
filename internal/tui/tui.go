@@ -17,6 +17,7 @@ import (
 	"lambda/internal/agent"
 	"lambda/internal/config"
 	"lambda/internal/tools"
+	"lambda/internal/worktree"
 )
 
 // Styles exported for reuse by the non-interactive (one-shot) runner.
@@ -81,6 +82,7 @@ type block struct {
 type uiModel struct {
 	cfg     *config.Config
 	agent   *agent.Agent
+	session *worktree.Session
 	askCh   chan confirmRequest
 	eventCh chan agent.Event
 
@@ -97,14 +99,25 @@ type uiModel struct {
 	blocks []block
 
 	pendingAsk *confirmRequest
+	quitModal  quitModalState
+	// chosenAction is read by the caller after Run returns to decide
+	// whether to keep or discard the session worktree. Defaults to
+	// ActionKeep (zero value) when the user never opens the modal.
+	chosenAction worktree.Action
 
 	width, height int
 	errMsg        string
 }
 
-func newUIModel(cfg *config.Config, systemPrompt string, pol agent.Policy) (*uiModel, error) {
+type quitModalState struct {
+	active bool
+	body   string
+}
+
+func newUIModel(cfg *config.Config, systemPrompt string, pol agent.Policy, session *worktree.Session) (*uiModel, error) {
 	m := &uiModel{
 		cfg:     cfg,
+		session: session,
 		askCh:   make(chan confirmRequest, 1),
 		eventCh: make(chan agent.Event, 128),
 	}
@@ -237,10 +250,16 @@ func (m *uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.pendingAsk != nil {
 			return m, m.handleConfirmKey(msg)
 		}
+		if m.quitModal.active {
+			return m, m.handleQuitKey(msg)
+		}
 		switch msg.String() {
 		case "ctrl+c":
 			if m.turnActive {
 				m.turnCancel()
+				return m, nil
+			}
+			if m.tryOpenQuitModal() {
 				return m, nil
 			}
 			return m, tea.Quit
@@ -290,6 +309,40 @@ func (m *uiModel) handleSlashCommand(text string) {
 		m.blocks = append(m.blocks, block{kind: blockError, text: "unknown command: " + cmd + " (try /help)", final: true})
 	}
 	m.refreshViewport()
+}
+
+// tryOpenQuitModal returns true and opens the quit modal if the worktree
+// session has changes worth deciding on; otherwise returns false so the
+// caller can quit immediately.
+func (m *uiModel) tryOpenQuitModal() bool {
+	if m.session == nil {
+		return false
+	}
+	body, hasChanges := m.session.Summary(context.Background())
+	if !hasChanges {
+		return false
+	}
+	m.quitModal = quitModalState{active: true, body: body}
+	m.input.Blur()
+	return true
+}
+
+func (m *uiModel) handleQuitKey(msg tea.KeyMsg) tea.Cmd {
+	switch msg.String() {
+	case "k", "K":
+		m.chosenAction = worktree.ActionKeep
+		m.quitModal.active = false
+		return tea.Quit
+	case "d", "D":
+		m.chosenAction = worktree.ActionDiscard
+		m.quitModal.active = false
+		return tea.Quit
+	case "esc", "ctrl+c":
+		m.quitModal.active = false
+		m.input.Focus()
+		return nil
+	}
+	return nil
 }
 
 func (m *uiModel) handleConfirmKey(msg tea.KeyMsg) tea.Cmd {
@@ -381,6 +434,11 @@ func (m *uiModel) View() string {
 
 	if m.pendingAsk != nil {
 		modal := renderModal(m.pendingAsk, m.width)
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, modal)
+	}
+
+	if m.quitModal.active {
+		modal := renderQuitModal(m.quitModal.body, m.width)
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, modal)
 	}
 
@@ -566,6 +624,19 @@ func renderModal(req *confirmRequest, width int) string {
 	return modalBoxStyle.Width(maxw).Render(b.String())
 }
 
+func renderQuitModal(body string, width int) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s\n\n", ToolCallStyle.Render("Session left changes — keep or discard?"))
+	b.WriteString(toolOutStyle.Render(body))
+	b.WriteString("\n\n")
+	b.WriteString(statusStyle.Render("[k] keep on branch   [d] discard   [Esc] back to chat"))
+	maxw := width - 6
+	if maxw < 30 {
+		maxw = 30
+	}
+	return modalBoxStyle.Width(maxw).Render(b.String())
+}
+
 func modalPreview(name, rawArgs string) string {
 	var m map[string]any
 	_ = json.Unmarshal([]byte(rawArgs), &m)
@@ -610,13 +681,18 @@ func firstN[T any](s []T, n int) []T {
 	return s[:n]
 }
 
-// Run starts the Bubble Tea REPL. It blocks until the program exits.
-func Run(ctx context.Context, cfg *config.Config, systemPrompt string, pol agent.Policy) error {
-	m, err := newUIModel(cfg, systemPrompt, pol)
+// Run starts the Bubble Tea REPL. It blocks until the program exits and
+// returns the user's keep/discard choice for the worktree session. The
+// returned action is ActionKeep when the user never reaches the quit
+// modal (e.g. clean session, or worktree disabled).
+func Run(ctx context.Context, cfg *config.Config, systemPrompt string, pol agent.Policy, session *worktree.Session) (worktree.Action, error) {
+	m, err := newUIModel(cfg, systemPrompt, pol, session)
 	if err != nil {
-		return err
+		return worktree.ActionKeep, err
 	}
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
-	_, err = p.Run()
-	return err
+	if _, err := p.Run(); err != nil {
+		return worktree.ActionKeep, err
+	}
+	return m.chosenAction, nil
 }
