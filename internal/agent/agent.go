@@ -41,6 +41,7 @@ type Event interface{ isEvent() }
 
 type (
 	EventContentDelta  struct{ Text string }
+	EventThinkingDelta struct{ Text string }
 	EventAssistantDone struct{ Text string }
 	EventToolStart     struct{ ID, Name, Args string }
 	EventToolResult    struct{ ID, Name, Result string }
@@ -50,6 +51,7 @@ type (
 )
 
 func (EventContentDelta) isEvent()  {}
+func (EventThinkingDelta) isEvent() {}
 func (EventAssistantDone) isEvent() {}
 func (EventToolStart) isEvent()     {}
 func (EventToolResult) isEvent()    {}
@@ -207,6 +209,9 @@ func (a *Agent) completeOne(ctx context.Context, out chan<- Event) (*openai.Chat
 		}
 		a.recordTokenUsage(charsSent, comp.Usage.PromptTokens)
 		msg := comp.Choices[0].Message
+		if r := extractReasoning(msg.JSON.ExtraFields); r != "" {
+			emit(ctx, out, EventThinkingDelta{Text: r})
+		}
 		if msg.Content != "" {
 			emit(ctx, out, EventAssistantDone{Text: msg.Content})
 		}
@@ -219,8 +224,12 @@ func (a *Agent) completeOne(ctx context.Context, out chan<- Event) (*openai.Chat
 		chunk := stream.Current()
 		acc.AddChunk(chunk)
 		if len(chunk.Choices) > 0 {
-			if delta := chunk.Choices[0].Delta.Content; delta != "" {
-				emit(ctx, out, EventContentDelta{Text: delta})
+			delta := chunk.Choices[0].Delta
+			if r := extractReasoning(delta.JSON.ExtraFields); r != "" {
+				emit(ctx, out, EventThinkingDelta{Text: r})
+			}
+			if delta.Content != "" {
+				emit(ctx, out, EventContentDelta{Text: delta.Content})
 			}
 		}
 	}

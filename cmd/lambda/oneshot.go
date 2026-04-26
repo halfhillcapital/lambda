@@ -45,6 +45,11 @@ func runOneShot(ctx context.Context, cfg *config.Config, systemPrompt string, po
 		switch e := ev.(type) {
 		case agent.EventContentDelta:
 			fmt.Fprint(os.Stdout, e.Text)
+		case agent.EventThinkingDelta:
+			// Drop reasoning from stdout so piped output stays clean. The
+			// agent already strips it from history; this just discards the
+			// live stream.
+			_ = e
 		case agent.EventAssistantDone:
 			if cfg.NoStream {
 				fmt.Fprint(os.Stdout, e.Text)

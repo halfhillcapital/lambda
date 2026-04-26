@@ -34,8 +34,10 @@ var (
 			BorderForeground(lipgloss.Color("#87d7ff")).
 			PaddingLeft(1).
 			MarginTop(1)
-	assistantStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffffff"))
-	toolOutStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#8a8a8a"))
+	assistantStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffffff"))
+	thinkingHeaderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#626262")).Italic(true)
+	thinkingBodyStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#626262"))
+	toolOutStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("#8a8a8a"))
 	noticeStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#d7d787")).Italic(true)
 	statusStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#626262"))
 	warnStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffd75f"))
@@ -65,6 +67,7 @@ type blockKind int
 const (
 	blockUser blockKind = iota
 	blockAssistant
+	blockThinking
 	blockTool
 	blockNotice
 	blockError
@@ -384,12 +387,19 @@ func (m *uiModel) startTurn(userInput string) tea.Cmd {
 
 func (m *uiModel) handleEvent(ev agent.Event) {
 	switch e := ev.(type) {
+	case agent.EventThinkingDelta:
+		if n := len(m.blocks); n == 0 || m.blocks[n-1].kind != blockThinking || m.blocks[n-1].final {
+			m.blocks = append(m.blocks, block{kind: blockThinking})
+		}
+		m.blocks[len(m.blocks)-1].text += e.Text
 	case agent.EventContentDelta:
+		m.finalizeOpenThinking()
 		if n := len(m.blocks); n == 0 || m.blocks[n-1].kind != blockAssistant || m.blocks[n-1].final {
 			m.blocks = append(m.blocks, block{kind: blockAssistant})
 		}
 		m.blocks[len(m.blocks)-1].text += e.Text
 	case agent.EventAssistantDone:
+		m.finalizeOpenThinking()
 		if n := len(m.blocks); n == 0 || m.blocks[n-1].kind != blockAssistant || m.blocks[n-1].final {
 			m.blocks = append(m.blocks, block{kind: blockAssistant, text: e.Text})
 		} else {
@@ -408,6 +418,7 @@ func (m *uiModel) handleEvent(ev agent.Event) {
 	case agent.EventToolDenied:
 		m.blocks = append(m.blocks, block{kind: blockNotice, text: fmt.Sprintf("denied %s", e.Name), final: true})
 	case agent.EventTurnDone:
+		m.finalizeOpenThinking()
 		m.turnActive = false
 		if m.turnCancel != nil {
 			m.turnCancel()
@@ -417,6 +428,7 @@ func (m *uiModel) handleEvent(ev agent.Event) {
 			m.blocks = append(m.blocks, block{kind: blockNotice, text: e.Reason, final: true})
 		}
 	case agent.EventError:
+		m.finalizeOpenThinking()
 		m.turnActive = false
 		if m.turnCancel != nil {
 			m.turnCancel()
@@ -425,6 +437,15 @@ func (m *uiModel) handleEvent(ev agent.Event) {
 		m.blocks = append(m.blocks, block{kind: blockError, text: e.Err.Error(), final: true})
 	}
 	m.refreshViewport()
+}
+
+// finalizeOpenThinking marks the trailing thinking block (if any) final, so
+// further content/tool blocks render below it and renderBlock collapses it
+// into a "(thought for N words)" stub.
+func (m *uiModel) finalizeOpenThinking() {
+	if n := len(m.blocks); n > 0 && m.blocks[n-1].kind == blockThinking && !m.blocks[n-1].final {
+		m.blocks[n-1].final = true
+	}
 }
 
 func (m *uiModel) View() string {
@@ -534,6 +555,20 @@ func (m *uiModel) renderBlock(b block) string {
 			}
 		}
 		return assistantStyle.Render(b.text)
+	case blockThinking:
+		body := strings.TrimSpace(b.text)
+		if b.final {
+			words := len(strings.Fields(body))
+			if words == 0 {
+				return ""
+			}
+			return thinkingHeaderStyle.Render(fmt.Sprintf("(thought for %d words)", words))
+		}
+		header := thinkingHeaderStyle.Render("thinking…")
+		if body == "" {
+			return header
+		}
+		return header + "\n" + thinkingBodyStyle.Render(indentLines(body, "  "))
 	case blockTool:
 		return b.text
 	case blockNotice:
