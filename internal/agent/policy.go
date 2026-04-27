@@ -38,7 +38,7 @@ func (v Verdict) String() string {
 }
 
 // Policy decides a verdict for a pending tool call. name is the tool's
-// registry name (e.g. "write_file"), rawArgs is the JSON argument object
+// registry name (e.g. "write"), rawArgs is the JSON argument object
 // the model sent.
 type Policy func(name, rawArgs string) Verdict
 
@@ -52,7 +52,7 @@ func NewPolicy(sessionRoot string) Policy {
 	dangerous := dangerousWritePaths()
 	return func(name, rawArgs string) Verdict {
 		switch name {
-		case "write_file", "edit_file":
+		case "write", "edit":
 			return evalWrite(rawArgs, root, dangerous)
 		case "bash":
 			return evalBash(rawArgs)
@@ -61,7 +61,7 @@ func NewPolicy(sessionRoot string) Policy {
 	}
 }
 
-// --- write_file / edit_file ---
+// --- write / edit ---
 
 func evalWrite(rawArgs, root string, dangerous []string) Verdict {
 	var a struct {

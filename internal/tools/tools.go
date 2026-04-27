@@ -1,5 +1,5 @@
 // Package tools implements the tool schema registry and dispatcher used by
-// the agent: read_file, write_file, edit_file, grep, glob, and bash.
+// the agent: read, write, edit, grep, glob, and bash.
 package tools
 
 import (

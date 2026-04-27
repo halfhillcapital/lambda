@@ -190,9 +190,9 @@ func TestRun_CancelMidTurn_PreservesPairing(t *testing.T) {
 	srv := newScriptedServer(t, func(call int, _ recordedRequest) (int, any) {
 		writeArgs, _ := json.Marshal(map[string]string{"path": writePath, "content": "x"})
 		return 200, cannedAssistant("", "tool_calls", 0,
-			fakeToolCall{ID: "call_1", Name: "read_file", Arguments: readFileArgs(readPath)},
-			fakeToolCall{ID: "call_2", Name: "write_file", Arguments: string(writeArgs)},
-			fakeToolCall{ID: "call_3", Name: "read_file", Arguments: readFileArgs(thirdPath)},
+			fakeToolCall{ID: "call_1", Name: "read", Arguments: readFileArgs(readPath)},
+			fakeToolCall{ID: "call_2", Name: "write", Arguments: string(writeArgs)},
+			fakeToolCall{ID: "call_3", Name: "read", Arguments: readFileArgs(thirdPath)},
 		)
 	})
 
@@ -317,10 +317,10 @@ func TestRun_CompactionPreservesToolPairs(t *testing.T) {
 		switch call {
 		case 0:
 			return 200, cannedAssistant("", "tool_calls", 0,
-				fakeToolCall{ID: "A", Name: "read_file", Arguments: readFileArgs(bigPath)})
+				fakeToolCall{ID: "A", Name: "read", Arguments: readFileArgs(bigPath)})
 		case 1:
 			return 200, cannedAssistant("", "tool_calls", 0,
-				fakeToolCall{ID: "B", Name: "read_file", Arguments: readFileArgs(bigPath)})
+				fakeToolCall{ID: "B", Name: "read", Arguments: readFileArgs(bigPath)})
 		default:
 			return 200, cannedAssistant("final", "stop", 0)
 		}
@@ -392,7 +392,7 @@ func TestRun_IterationLimit_EmitsTurnDone(t *testing.T) {
 	srv := newScriptedServer(t, func(call int, _ recordedRequest) (int, any) {
 		// Always demand another tool call; never finish.
 		return 200, cannedAssistant("", "tool_calls", 0,
-			fakeToolCall{ID: fmt.Sprintf("call_%d", call), Name: "read_file", Arguments: readFileArgs(file)})
+			fakeToolCall{ID: fmt.Sprintf("call_%d", call), Name: "read", Arguments: readFileArgs(file)})
 	})
 
 	a := newAgent(t, srv, func(c *config.Config) { c.MaxSteps = maxSteps })
@@ -515,7 +515,7 @@ func TestRun_Streaming_StitchesContentAndToolCalls(t *testing.T) {
 					"index":    0,
 					"id":       "call_x",
 					"type":     "function",
-					"function": map[string]any{"name": "read_file"},
+					"function": map[string]any{"name": "read"},
 				}}}, ""),
 				sseChunk(map[string]any{"tool_calls": []map[string]any{{
 					"index":    0,
@@ -554,8 +554,8 @@ func TestRun_Streaming_StitchesContentAndToolCalls(t *testing.T) {
 			deltas = append(deltas, e.Text)
 		case EventToolStart:
 			sawToolStart = true
-			if e.ID != "call_x" || e.Name != "read_file" {
-				t.Errorf("EventToolStart = %+v, want ID=call_x Name=read_file", e)
+			if e.ID != "call_x" || e.Name != "read" {
+				t.Errorf("EventToolStart = %+v, want ID=call_x Name=read", e)
 			}
 			if e.Args != pathArg {
 				t.Errorf("stitched tool_call args = %q, want %q", e.Args, pathArg)

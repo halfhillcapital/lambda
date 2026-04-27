@@ -34,11 +34,11 @@ func TestWritePathsInsideRootAutoAllow(t *testing.T) {
 	}
 	for _, p := range cases {
 		t.Run(p, func(t *testing.T) {
-			if got := pol("write_file", writeArgs(t, p)); got != AutoAllow {
-				t.Errorf("write_file %q: got %v, want AutoAllow", p, got)
+			if got := pol("write", writeArgs(t, p)); got != AutoAllow {
+				t.Errorf("write %q: got %v, want AutoAllow", p, got)
 			}
-			if got := pol("edit_file", writeArgs(t, p)); got != AutoAllow {
-				t.Errorf("edit_file %q: got %v, want AutoAllow", p, got)
+			if got := pol("edit", writeArgs(t, p)); got != AutoAllow {
+				t.Errorf("edit %q: got %v, want AutoAllow", p, got)
 			}
 		})
 	}
@@ -55,8 +55,8 @@ func TestWritePathsOutsideRootPrompt(t *testing.T) {
 	}
 	for _, p := range cases {
 		t.Run(p, func(t *testing.T) {
-			if got := pol("write_file", writeArgs(t, p)); got != Prompt {
-				t.Errorf("write_file %q: got %v, want Prompt", p, got)
+			if got := pol("write", writeArgs(t, p)); got != Prompt {
+				t.Errorf("write %q: got %v, want Prompt", p, got)
 			}
 		})
 	}
@@ -72,7 +72,7 @@ func TestWriteBadArgsPrompt(t *testing.T) {
 	}
 	for _, a := range cases {
 		t.Run(a, func(t *testing.T) {
-			if got := pol("write_file", a); got != Prompt {
+			if got := pol("write", a); got != Prompt {
 				t.Errorf("args=%q: got %v, want Prompt", a, got)
 			}
 		})
@@ -231,8 +231,8 @@ func TestNonDestructiveToolsPrompt(t *testing.T) {
 	// The agent only consults the policy for destructive tools, but if
 	// someone calls us with an unrecognised tool name we default to Prompt.
 	pol := NewPolicy(t.TempDir())
-	if got := pol("read_file", `{"path":"foo"}`); got != Prompt {
-		t.Errorf("read_file: got %v, want Prompt", got)
+	if got := pol("read", `{"path":"foo"}`); got != Prompt {
+		t.Errorf("read: got %v, want Prompt", got)
 	}
 }
 
