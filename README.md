@@ -8,8 +8,8 @@ A minimal CLI coding agent for local LLMs via any OpenAI-compatible endpoint
   tool calls.
 - **One-shot mode** via `-p`, positional args, or piped stdin — stdout stays
   clean so it pipes cleanly into other tools.
-- **Seven built-in tools**: `read_file`, `write_file`, `edit_file`, `list_dir`,
-  `grep`, `glob`, `bash`. Destructive ones (`write_file`, `edit_file`, `bash`)
+- **Six built-in tools**: `read_file`, `write_file`, `edit_file`, `grep`,
+  `glob`, `bash`. Destructive ones (`write_file`, `edit_file`, `bash`)
   require per-call confirmation (or `--yolo`).
 - **REPL slash commands**: `/new` (or `/clear`) to start a fresh conversation,
   `/help` for the list. Anything starting with `/` is treated as a command.

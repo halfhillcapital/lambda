@@ -1,5 +1,5 @@
 // Package tools implements the tool schema registry and dispatcher used by
-// the agent: read_file, write_file, edit_file, list_dir, grep, glob, and bash.
+// the agent: read_file, write_file, edit_file, grep, glob, and bash.
 package tools
 
 import (
@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -25,7 +24,6 @@ const (
 	ReadFile  Name = "read_file"
 	WriteFile Name = "write_file"
 	EditFile  Name = "edit_file"
-	ListDir   Name = "list_dir"
 	Grep      Name = "grep"
 	Glob      Name = "glob"
 	Bash      Name = "bash"
@@ -82,12 +80,6 @@ func Schemas() []openai.ChatCompletionToolParam {
 				"replace_all": boolProp("If true, replace every occurrence instead of requiring uniqueness. Default false."),
 			},
 			"required": []string{"path", "old_string", "new_string"},
-		}),
-		mk(string(ListDir), "List the entries of a directory (one per line, directories suffixed with /).", shared.FunctionParameters{
-			"type": "object",
-			"properties": map[string]any{
-				"path": strProp("Directory path. Defaults to the current working directory if omitted."),
-			},
 		}),
 		mk(string(Grep), "Search file contents for a regex pattern (RE2 syntax). Returns matching lines as path:line:text. Skips .git, node_modules, vendor, and binary files. Prefer over `bash grep` — faster and budget-aware.", shared.FunctionParameters{
 			"type": "object",
@@ -173,14 +165,6 @@ func executeInner(ctx context.Context, name, rawArgs string) (string, error) {
 			return "", err
 		}
 		return doEditFile(a.Path, a.OldString, a.NewString, a.ReplaceAll)
-	case ListDir:
-		var a struct {
-			Path string `json:"path"`
-		}
-		if err := decodeArgs(rawArgs, &a); err != nil {
-			return "", err
-		}
-		return doListDir(a.Path)
 	case Grep:
 		var a struct {
 			Pattern         string `json:"pattern"`
@@ -299,29 +283,6 @@ func pluralS(n int) string {
 		return ""
 	}
 	return "s"
-}
-
-func doListDir(path string) (string, error) {
-	if path == "" {
-		path = "."
-	}
-	entries, err := os.ReadDir(path)
-	if err != nil {
-		return "", err
-	}
-	names := make([]string, 0, len(entries))
-	for _, e := range entries {
-		n := e.Name()
-		if e.IsDir() {
-			n += "/"
-		}
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	if len(names) == 0 {
-		return "(empty directory)", nil
-	}
-	return strings.Join(names, "\n"), nil
 }
 
 const (

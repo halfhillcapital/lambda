@@ -94,7 +94,7 @@ func TerseArgs(name, rawArgs string) string {
 		if cmd, ok := m["command"].(string); ok {
 			return Truncate(cmd, 240)
 		}
-	case tools.ReadFile, tools.ListDir:
+	case tools.ReadFile:
 		if p, ok := m["path"].(string); ok {
 			return p
 		}

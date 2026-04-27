@@ -234,9 +234,6 @@ func TestNonDestructiveToolsPrompt(t *testing.T) {
 	if got := pol("read_file", `{"path":"foo"}`); got != Prompt {
 		t.Errorf("read_file: got %v, want Prompt", got)
 	}
-	if got := pol("list_dir", `{"path":"."}`); got != Prompt {
-		t.Errorf("list_dir: got %v, want Prompt", got)
-	}
 }
 
 func TestTokenize(t *testing.T) {

@@ -17,7 +17,6 @@ func TestIsDestructive(t *testing.T) {
 		want bool
 	}{
 		{ReadFile, false},
-		{ListDir, false},
 		{WriteFile, true},
 		{EditFile, true},
 		{Bash, true},
@@ -32,7 +31,7 @@ func TestIsDestructive(t *testing.T) {
 func TestSchemas(t *testing.T) {
 	want := map[string]bool{
 		string(ReadFile): true, string(WriteFile): true, string(EditFile): true,
-		string(ListDir): true, string(Grep): true, string(Glob): true, string(Bash): true,
+		string(Grep): true, string(Glob): true, string(Bash): true,
 	}
 	got := Schemas()
 	if len(got) != len(want) {
@@ -262,50 +261,6 @@ func TestDoEditFile(t *testing.T) {
 	})
 }
 
-func TestDoListDir(t *testing.T) {
-	dir := t.TempDir()
-	mustMkdir(t, filepath.Join(dir, "subdir"), 0o755)
-	mustWrite(t, filepath.Join(dir, "b.txt"), "", 0o644)
-	mustWrite(t, filepath.Join(dir, "a.txt"), "", 0o644)
-
-	t.Run("sorted with dir suffix", func(t *testing.T) {
-		s, err := doListDir(dir)
-		if err != nil {
-			t.Fatal(err)
-		}
-		want := "a.txt\nb.txt\nsubdir/"
-		if s != want {
-			t.Errorf("got %q, want %q", s, want)
-		}
-	})
-
-	t.Run("empty dir", func(t *testing.T) {
-		s, err := doListDir(t.TempDir())
-		if err != nil {
-			t.Fatal(err)
-		}
-		if s != "(empty directory)" {
-			t.Errorf("got %q", s)
-		}
-	})
-
-	t.Run("nonexistent path", func(t *testing.T) {
-		if _, err := doListDir(filepath.Join(dir, "nope")); err == nil {
-			t.Error("expected error")
-		}
-	})
-
-	t.Run("default to current dir", func(t *testing.T) {
-		s, err := doListDir("")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if s == "" {
-			t.Error("expected non-empty listing of cwd")
-		}
-	})
-}
-
 func TestTruncateOutput(t *testing.T) {
 	t.Run("under both limits unchanged", func(t *testing.T) {
 		s := "a\nb\nc"
@@ -458,9 +413,3 @@ func mustWrite(t *testing.T, path, content string, mode os.FileMode) {
 	}
 }
 
-func mustMkdir(t *testing.T, path string, mode os.FileMode) {
-	t.Helper()
-	if err := os.Mkdir(path, mode); err != nil {
-		t.Fatal(err)
-	}
-}
