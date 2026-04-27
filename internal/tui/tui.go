@@ -38,13 +38,14 @@ var (
 	thinkingHeaderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#626262")).Italic(true)
 	thinkingBodyStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#626262"))
 	toolOutStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("#8a8a8a"))
-	noticeStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#d7d787")).Italic(true)
-	statusStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#626262"))
-	warnStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffd75f"))
-	modalBoxStyle  = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("#ffaf5f")).
-			Padding(0, 1)
+	toolBlockStyle      = lipgloss.NewStyle().MarginTop(1)
+	noticeStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("#d7d787")).Italic(true)
+	statusStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("#626262"))
+	warnStyle           = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffd75f"))
+	modalBoxStyle       = lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color("#ffaf5f")).
+				Padding(0, 1)
 	diffAddStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#87ff87"))
 	diffDelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#ff5f5f"))
 )
@@ -552,7 +553,7 @@ func (m *uiModel) renderBlock(b block) string {
 	case blockAssistant:
 		if b.final && m.renderer != nil {
 			if out, err := m.renderer.Render(b.text); err == nil {
-				return strings.TrimRight(out, "\n")
+				return assistantStyle.Render(strings.TrimRight(out, "\n"))
 			}
 		}
 		return assistantStyle.Render(b.text)
@@ -571,7 +572,7 @@ func (m *uiModel) renderBlock(b block) string {
 		}
 		return header + "\n" + thinkingBodyStyle.Render(indentLines(body, "  "))
 	case blockTool:
-		return b.text
+		return toolBlockStyle.Render(b.text)
 	case blockNotice:
 		return noticeStyle.Render("· " + b.text)
 	case blockError:
