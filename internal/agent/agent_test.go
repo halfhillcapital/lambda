@@ -180,44 +180,35 @@ func readFileArgs(path string) string {
 // every tool_call_id (the OpenAI API 400s otherwise).
 func TestRun_CancelMidTurn_PreservesPairing(t *testing.T) {
 	dir := t.TempDir()
-	files := []string{
-		filepath.Join(dir, "a.txt"),
-		filepath.Join(dir, "b.txt"),
-		filepath.Join(dir, "c.txt"),
-	}
-	for i, p := range files {
-		if err := os.WriteFile(p, []byte{byte('a' + i)}, 0o644); err != nil {
-			t.Fatal(err)
-		}
+	readPath := filepath.Join(dir, "a.txt")
+	writePath := filepath.Join(dir, "b.txt")
+	thirdPath := filepath.Join(dir, "c.txt")
+	if err := os.WriteFile(readPath, []byte("a"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 
 	srv := newScriptedServer(t, func(call int, _ recordedRequest) (int, any) {
+		writeArgs, _ := json.Marshal(map[string]string{"path": writePath, "content": "x"})
 		return 200, cannedAssistant("", "tool_calls", 0,
-			fakeToolCall{ID: "call_1", Name: "read_file", Arguments: readFileArgs(files[0])},
-			fakeToolCall{ID: "call_2", Name: "read_file", Arguments: readFileArgs(files[1])},
-			fakeToolCall{ID: "call_3", Name: "read_file", Arguments: readFileArgs(files[2])},
+			fakeToolCall{ID: "call_1", Name: "read_file", Arguments: readFileArgs(readPath)},
+			fakeToolCall{ID: "call_2", Name: "write_file", Arguments: string(writeArgs)},
+			fakeToolCall{ID: "call_3", Name: "read_file", Arguments: readFileArgs(thirdPath)},
 		)
 	})
 
-	a := newAgent(t, srv)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	out := make(chan Event, 64)
-	var events []Event
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for ev := range out {
-			events = append(events, ev)
-			if r, ok := ev.(EventToolResult); ok && r.ID == "call_1" {
-				cancel()
-			}
-		}
-	}()
+	pol := func(name, args string) Verdict { return Prompt }
+	confirmer := func(_ context.Context, _, _ string) Decision {
+		cancel()
+		return DecisionAllow
+	}
 
+	a := newAgentFull(t, srv, pol, confirmer)
+	out := make(chan Event, 64)
 	a.Run(ctx, "go", out)
-	<-done
+	events := drainEvents(out)
 
 	if got := srv.calls(); got != 1 {
 		t.Errorf("server calls = %d, want 1 (no follow-up after cancel)", got)
