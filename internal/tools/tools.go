@@ -21,9 +21,9 @@ import (
 type Name string
 
 const (
-	ReadFile  Name = "read_file"
-	WriteFile Name = "write_file"
-	EditFile  Name = "edit_file"
+	ReadFile  Name = "read"
+	WriteFile Name = "write"
+	EditFile  Name = "edit"
 	Grep      Name = "grep"
 	Glob      Name = "glob"
 	Bash      Name = "bash"
