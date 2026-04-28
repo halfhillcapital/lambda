@@ -7,77 +7,117 @@ import (
 	"github.com/openai/openai-go"
 )
 
+// history owns the chat message slice and the bookkeeping for compaction.
+// Not safe for concurrent use — Agent serializes per-turn access.
+type history struct {
+	messages         []openai.ChatCompletionMessageParamUnion
+	maxContextTokens int     // soft cap on prompt tokens; <=0 disables compaction
+	charsPerToken    float64 // running calibration from server-reported prompt_tokens; 0 means no data yet
+	droppedTurns     int
+	elisionNoteIdx   int // 0 = no note inserted yet
+}
+
+// defaultCharsPerToken is the fallback ratio used until the server reports
+// actual prompt_tokens. Chat/tool-call JSON tokenizes denser than plain prose,
+// so this is conservative on the low side (over-estimates tokens, triggering
+// earlier compaction rather than blowing the context window).
+const defaultCharsPerToken = 3.5
+
+// compactStats summarises one compaction pass. The zero value means no-op.
+type compactStats struct {
+	beforeTokens int
+	afterTokens  int
+	turnsDropped int
+	shrunk       bool
+	msgsBefore   int
+	msgsAfter    int
+}
+
+func (s compactStats) changed() bool { return s.turnsDropped != 0 || s.shrunk }
+
+func newHistory(systemPrompt string, maxContextTokens int) *history {
+	return &history{
+		messages:         []openai.ChatCompletionMessageParamUnion{openai.SystemMessage(systemPrompt)},
+		maxContextTokens: maxContextTokens,
+	}
+}
+
+// reset clears history back to the original system message and forgets any
+// compaction state. Used by REPL slash commands like /new.
+func (h *history) reset() {
+	if len(h.messages) > 0 && roleOf(h.messages[0]) == "system" {
+		h.messages = h.messages[:1]
+	} else {
+		h.messages = h.messages[:0]
+	}
+	h.droppedTurns = 0
+	h.elisionNoteIdx = 0
+}
+
 // compactIfNeeded drops oldest turns until the estimated prompt-token count
 // fits inside maxContextTokens, preserving leading system messages and at
 // least the most recent turn. A single system note records how many turns
 // were elided. If the last remaining turn alone exceeds the budget, we fall
-// back to truncating its largest tool message bodies so the request still fits.
-func (a *Agent) compactIfNeeded() {
-	if a.maxContextTokens <= 0 {
-		return
+// back to truncating its largest tool message bodies so the request still
+// fits. Returns stats describing what changed (zero stats == no-op).
+func (h *history) compactIfNeeded() compactStats {
+	if h.maxContextTokens <= 0 {
+		return compactStats{}
 	}
-	var beforeTokens, droppedAtStart, msgsBefore int
-	if a.logger != nil {
-		beforeTokens = a.estimateTokens()
-		droppedAtStart = a.droppedTurns
-		msgsBefore = len(a.messages)
+	stats := compactStats{
+		beforeTokens: h.estimateTokens(),
+		msgsBefore:   len(h.messages),
 	}
-	for a.estimateTokens() > a.maxContextTokens {
-		headEnd := a.skipSystemHead()
-		from := a.firstUserAfter(headEnd)
+	droppedAtStart := h.droppedTurns
+	for h.estimateTokens() > h.maxContextTokens {
+		headEnd := h.skipSystemHead()
+		from := h.firstUserAfter(headEnd)
 		if from < 0 {
 			break
 		}
-		to := a.firstUserAfter(from + 1)
+		to := h.firstUserAfter(from + 1)
 		if to < 0 {
 			break // only one turn left; drop-loop can't help
 		}
-		a.messages = slices.Delete(a.messages, from, to)
-		a.droppedTurns++
+		h.messages = slices.Delete(h.messages, from, to)
+		h.droppedTurns++
 		// The note (if any) was inside the leading-system run, so its index
 		// doesn't shift when we delete from `from` (which is past headEnd).
 	}
-	shrunk := a.estimateTokens() > a.maxContextTokens
-	if shrunk {
-		a.shrinkLargestToolMessages()
+	stats.shrunk = h.estimateTokens() > h.maxContextTokens
+	if stats.shrunk {
+		h.shrinkLargestToolMessages()
 	}
-	a.refreshElisionNote()
-	if a.logger != nil && (a.droppedTurns != droppedAtStart || shrunk) {
-		a.logger.Write("compaction", map[string]any{
-			"before_tokens":    beforeTokens,
-			"after_tokens":     a.estimateTokens(),
-			"limit":            a.maxContextTokens,
-			"turns_dropped":    a.droppedTurns - droppedAtStart,
-			"tool_msgs_shrunk": shrunk,
-			"msgs_before":      msgsBefore,
-			"msgs_after":       len(a.messages),
-		})
-	}
+	h.refreshElisionNote()
+	stats.afterTokens = h.estimateTokens()
+	stats.turnsDropped = h.droppedTurns - droppedAtStart
+	stats.msgsAfter = len(h.messages)
+	return stats
 }
 
 // shrinkLargestToolMessages truncates tool message bodies, largest first, until
 // the total fits the budget or nothing meaningful is left to shrink. Called
 // only after the drop loop has exhausted droppable turns.
-func (a *Agent) shrinkLargestToolMessages() {
+func (h *history) shrinkLargestToolMessages() {
 	const minBody = 512
-	for a.estimateTokens() > a.maxContextTokens {
-		idx, size := a.largestToolMessage()
+	for h.estimateTokens() > h.maxContextTokens {
+		idx, size := h.largestToolMessage()
 		if idx < 0 || size <= minBody {
 			return
 		}
-		m := a.messages[idx].OfTool
+		m := h.messages[idx].OfTool
 		body := m.Content.OfString.Value
 		target := max(size/2, minBody)
 		trimmed := body[:target] + fmt.Sprintf("\n… (tool result truncated from %d to %d bytes to fit context)", len(body), target)
-		a.messages[idx] = openai.ToolMessage(trimmed, m.ToolCallID)
+		h.messages[idx] = openai.ToolMessage(trimmed, m.ToolCallID)
 	}
 }
 
 // largestToolMessage returns the index and string-content length of the
 // biggest tool message in the history, or (-1, 0) if none has string content.
-func (a *Agent) largestToolMessage() (int, int) {
+func (h *history) largestToolMessage() (int, int) {
 	bestIdx, bestSize := -1, 0
-	for i, m := range a.messages {
+	for i, m := range h.messages {
 		if m.OfTool == nil || !m.OfTool.Content.OfString.Valid() {
 			continue
 		}
@@ -93,28 +133,28 @@ func (a *Agent) largestToolMessage() (int, int) {
 // refreshElisionNote inserts or updates a system message recording how many
 // turns were dropped. Inserted right after the last leading system message so
 // it joins the "head" and is itself preserved by future compactions.
-func (a *Agent) refreshElisionNote() {
-	if a.droppedTurns == 0 {
+func (h *history) refreshElisionNote() {
+	if h.droppedTurns == 0 {
 		return
 	}
 	note := openai.SystemMessage(fmt.Sprintf(
 		"[note: %d earlier turn(s) omitted to fit the context window]",
-		a.droppedTurns,
+		h.droppedTurns,
 	))
-	if a.elisionNoteIdx > 0 && a.elisionNoteIdx < len(a.messages) {
-		a.messages[a.elisionNoteIdx] = note
+	if h.elisionNoteIdx > 0 && h.elisionNoteIdx < len(h.messages) {
+		h.messages[h.elisionNoteIdx] = note
 		return
 	}
-	insertAt := a.skipSystemHead()
-	a.messages = slices.Insert(a.messages, insertAt, note)
-	a.elisionNoteIdx = insertAt
+	insertAt := h.skipSystemHead()
+	h.messages = slices.Insert(h.messages, insertAt, note)
+	h.elisionNoteIdx = insertAt
 }
 
 // totalChars returns the size of the message list as the sum of each
 // message's JSON-marshalled length. Matches the bytes actually sent to the API.
-func (a *Agent) totalChars() int {
+func (h *history) totalChars() int {
 	n := 0
-	for _, m := range a.messages {
+	for _, m := range h.messages {
 		b, err := m.MarshalJSON()
 		if err != nil {
 			continue
@@ -128,12 +168,12 @@ func (a *Agent) totalChars() int {
 // ratio from the server's last-reported prompt_tokens, or defaultCharsPerToken
 // if we haven't seen a server response yet. Always rounds up (ceiling) so the
 // budget check errs on the side of compacting earlier.
-func (a *Agent) estimateTokens() int {
-	ratio := a.charsPerToken
+func (h *history) estimateTokens() int {
+	ratio := h.charsPerToken
 	if ratio <= 0 {
 		ratio = defaultCharsPerToken
 	}
-	chars := a.totalChars()
+	chars := h.totalChars()
 	est := float64(chars) / ratio
 	rounded := int(est)
 	if est > float64(rounded) {
@@ -146,17 +186,17 @@ func (a *Agent) estimateTokens() int {
 // the message set we just sent. Called after each completion; best-effort —
 // servers that don't report usage (common for some local inference frameworks)
 // leave the calibration at its previous value.
-func (a *Agent) recordTokenUsage(charsSent int, promptTokens int64) {
+func (h *history) recordTokenUsage(charsSent int, promptTokens int64) {
 	if promptTokens <= 0 || charsSent <= 0 {
 		return
 	}
-	a.charsPerToken = float64(charsSent) / float64(promptTokens)
+	h.charsPerToken = float64(charsSent) / float64(promptTokens)
 }
 
 // skipSystemHead returns the index of the first non-system message.
-func (a *Agent) skipSystemHead() int {
+func (h *history) skipSystemHead() int {
 	i := 0
-	for i < len(a.messages) && roleOf(a.messages[i]) == "system" {
+	for i < len(h.messages) && roleOf(h.messages[i]) == "system" {
 		i++
 	}
 	return i
@@ -164,9 +204,9 @@ func (a *Agent) skipSystemHead() int {
 
 // firstUserAfter returns the index of the first user message at or after start,
 // or -1 if none.
-func (a *Agent) firstUserAfter(start int) int {
-	for i := start; i < len(a.messages); i++ {
-		if roleOf(a.messages[i]) == "user" {
+func (h *history) firstUserAfter(start int) int {
+	for i := start; i < len(h.messages); i++ {
+		if roleOf(h.messages[i]) == "user" {
 			return i
 		}
 	}

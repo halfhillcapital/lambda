@@ -66,7 +66,7 @@ type Agent struct {
 	client    openai.Client
 	model     string
 	tools     []openai.ChatCompletionToolParam
-	messages  []openai.ChatCompletionMessageParamUnion
+	history   *history
 	maxSteps  int
 	noStream  bool
 	yolo      bool
@@ -76,20 +76,8 @@ type Agent struct {
 	allowedTools map[string]bool
 	alwaysAll    bool
 
-	// Conversation compaction state.
-	maxContextTokens int     // soft cap on prompt tokens; <=0 disables
-	charsPerToken    float64 // running calibration from server-reported prompt_tokens; 0 means no data yet
-	droppedTurns     int
-	elisionNoteIdx   int // 0 = no note inserted yet
-
 	logger *Logger // nil when --debug is off
 }
-
-// defaultCharsPerToken is the fallback ratio used until the server reports
-// actual prompt_tokens. Chat/tool-call JSON tokenizes denser than plain prose,
-// so this is conservative on the low side (over-estimates tokens, triggering
-// earlier compaction rather than blowing the context window).
-const defaultCharsPerToken = 3.5
 
 // New constructs an Agent. logger may be nil to disable structured logging;
 // pair with OpenDebugLog if --debug is on. The agent takes ownership of
@@ -105,19 +93,18 @@ func New(cfg *config.Config, systemPrompt string, pol Policy, confirmer Confirme
 		option.WithMaxRetries(0),
 	)
 	a := &Agent{
-		client:           client,
-		model:            cfg.Model,
-		tools:            tools.Schemas(),
-		messages:         []openai.ChatCompletionMessageParamUnion{openai.SystemMessage(systemPrompt)},
-		maxSteps:         cfg.MaxSteps,
-		noStream:         cfg.NoStream,
-		yolo:             cfg.Yolo,
-		policy:           pol,
-		confirmer:        confirmer,
-		allowedTools:     map[string]bool{},
-		alwaysAll:        cfg.Yolo,
-		maxContextTokens: cfg.MaxContextTokens,
-		logger:           logger,
+		client:       client,
+		model:        cfg.Model,
+		tools:        tools.Schemas(),
+		history:      newHistory(systemPrompt, cfg.MaxContextTokens),
+		maxSteps:     cfg.MaxSteps,
+		noStream:     cfg.NoStream,
+		yolo:         cfg.Yolo,
+		policy:       pol,
+		confirmer:    confirmer,
+		allowedTools: map[string]bool{},
+		alwaysAll:    cfg.Yolo,
+		logger:       logger,
 	}
 	if logger != nil {
 		logger.Write("session_start", map[string]any{
@@ -136,7 +123,7 @@ func New(cfg *config.Config, systemPrompt string, pol Policy, confirmer Confirme
 // value tracks the server's actual prompt_tokens once calibrated; before the
 // first completion it uses a char-based estimate.
 func (a *Agent) ContextUsage() (used, limit int) {
-	return a.estimateTokens(), a.maxContextTokens
+	return a.history.estimateTokens(), a.history.maxContextTokens
 }
 
 // Close releases agent-owned resources (currently the debug log file).
@@ -148,13 +135,7 @@ func (a *Agent) Close() error {
 // and any per-session "always allow" approvals. Used by REPL slash commands
 // like /new.
 func (a *Agent) Reset() {
-	if len(a.messages) > 0 && roleOf(a.messages[0]) == "system" {
-		a.messages = a.messages[:1]
-	} else {
-		a.messages = a.messages[:0]
-	}
-	a.droppedTurns = 0
-	a.elisionNoteIdx = 0
+	a.history.reset()
 	a.allowedTools = map[string]bool{}
 	a.alwaysAll = a.yolo
 }
@@ -165,7 +146,7 @@ func (a *Agent) Reset() {
 // the turn finishes (successfully or otherwise).
 func (a *Agent) Run(ctx context.Context, userInput string, out chan<- Event) {
 	defer close(out)
-	a.messages = append(a.messages, openai.UserMessage(userInput))
+	a.history.messages = append(a.history.messages, openai.UserMessage(userInput))
 	a.logger.Write("turn_start", map[string]any{"input_chars": len(userInput)})
 
 	for step := 0; step < a.maxSteps; step++ {
@@ -178,7 +159,7 @@ func (a *Agent) Run(ctx context.Context, userInput string, out chan<- Event) {
 			}
 			return
 		}
-		a.messages = append(a.messages, openai.ChatCompletionMessageParamUnion{OfAssistant: assistant})
+		a.history.messages = append(a.history.messages, openai.ChatCompletionMessageParamUnion{OfAssistant: assistant})
 
 		if len(assistant.ToolCalls) == 0 {
 			a.emit(ctx, out, EventTurnDone{Reason: "done"})
@@ -189,7 +170,7 @@ func (a *Agent) Run(ctx context.Context, userInput string, out chan<- Event) {
 				// Cancelled mid-turn. Every tool_call_id on the assistant message
 				// must have a paired tool message, or the next request 400s.
 				for _, rem := range assistant.ToolCalls[i+1:] {
-					a.messages = append(a.messages, openai.ToolMessage("cancelled by user", rem.ID))
+					a.history.messages = append(a.history.messages, openai.ToolMessage("cancelled by user", rem.ID))
 				}
 				return
 			}
@@ -204,11 +185,11 @@ func (a *Agent) completeOne(ctx context.Context, out chan<- Event) (*openai.Chat
 	a.compactIfNeeded()
 	// Snapshot the char count of the exact message set we're sending; pairs
 	// with prompt_tokens in the response to calibrate charsPerToken.
-	charsSent := a.totalChars()
+	charsSent := a.history.totalChars()
 
 	params := openai.ChatCompletionNewParams{
 		Model:    shared.ChatModel(a.model),
-		Messages: a.messages,
+		Messages: a.history.messages,
 		Tools:    a.tools,
 	}
 	if !a.noStream {
@@ -223,9 +204,9 @@ func (a *Agent) completeOne(ctx context.Context, out chan<- Event) (*openai.Chat
 	if a.logger != nil {
 		a.logger.Write("request", map[string]any{
 			"model":      a.model,
-			"msg_count":  len(a.messages),
+			"msg_count":  len(a.history.messages),
 			"chars_sent": charsSent,
-			"est_tokens": a.estimateTokens(),
+			"est_tokens": a.history.estimateTokens(),
 			"streaming":  !a.noStream,
 			"tool_count": len(a.tools),
 		})
@@ -243,7 +224,7 @@ func (a *Agent) completeOne(ctx context.Context, out chan<- Event) (*openai.Chat
 			a.logger.Write("response_error", map[string]any{"err": "no choices"})
 			return nil, errors.New("model returned no choices")
 		}
-		a.recordTokenUsage(charsSent, comp.Usage.PromptTokens)
+		a.history.recordTokenUsage(charsSent, comp.Usage.PromptTokens)
 		msg := comp.Choices[0].Message
 		a.logResponse(comp.Choices[0].FinishReason, msg.Content, extractReasoning(msg.JSON.ExtraFields), len(msg.ToolCalls), comp.Usage.PromptTokens, comp.Usage.CompletionTokens)
 		if r := extractReasoning(msg.JSON.ExtraFields); r != "" {
@@ -284,7 +265,7 @@ func (a *Agent) completeOne(ctx context.Context, out chan<- Event) (*openai.Chat
 		a.logger.Write("response_error", map[string]any{"err": "no choices"})
 		return nil, errors.New("model returned no choices")
 	}
-	a.recordTokenUsage(charsSent, acc.Usage.PromptTokens)
+	a.history.recordTokenUsage(charsSent, acc.Usage.PromptTokens)
 	msg := acc.Choices[0].Message
 	a.logResponse(acc.Choices[0].FinishReason, msg.Content, reasoning.String(), len(msg.ToolCalls), acc.Usage.PromptTokens, acc.Usage.CompletionTokens)
 	if msg.Content != "" {
@@ -322,7 +303,7 @@ func (a *Agent) handleToolCall(ctx context.Context, tc openai.ChatCompletionMess
 	if tools.Name(name).IsDestructive() && !a.alwaysAll && !a.allowedTools[name] {
 		denied := func(reason string) bool {
 			a.emit(ctx, out, EventToolDenied{ID: tc.ID, Name: name})
-			a.messages = append(a.messages, openai.ToolMessage(reason+" denied this tool call", tc.ID))
+			a.history.messages = append(a.history.messages, openai.ToolMessage(reason+" denied this tool call", tc.ID))
 			return true
 		}
 		switch a.policy(name, args) {
@@ -345,9 +326,27 @@ func (a *Agent) handleToolCall(ctx context.Context, tc openai.ChatCompletionMess
 	a.emit(ctx, out, EventToolStart{ID: tc.ID, Name: name, Args: args})
 	result := tools.Execute(ctx, name, args)
 	a.emit(ctx, out, EventToolResult{ID: tc.ID, Name: name, Result: result})
-	a.messages = append(a.messages, openai.ToolMessage(result, tc.ID))
+	a.history.messages = append(a.history.messages, openai.ToolMessage(result, tc.ID))
 
 	return ctx.Err() == nil
+}
+
+// compactIfNeeded delegates the compaction work to history and writes a log
+// record summarising the result when the logger is enabled.
+func (a *Agent) compactIfNeeded() {
+	stats := a.history.compactIfNeeded()
+	if a.logger == nil || !stats.changed() {
+		return
+	}
+	a.logger.Write("compaction", map[string]any{
+		"before_tokens":    stats.beforeTokens,
+		"after_tokens":     stats.afterTokens,
+		"limit":            a.history.maxContextTokens,
+		"turns_dropped":    stats.turnsDropped,
+		"tool_msgs_shrunk": stats.shrunk,
+		"msgs_before":      stats.msgsBefore,
+		"msgs_after":       stats.msgsAfter,
+	})
 }
 
 // assistantFromMessage converts a response ChatCompletionMessage into the

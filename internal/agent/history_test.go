@@ -38,40 +38,40 @@ func TestRoleOf(t *testing.T) {
 }
 
 func TestTotalCharsCountsAllMessages(t *testing.T) {
-	a := &Agent{messages: []openai.ChatCompletionMessageParamUnion{
+	h := &history{messages: []openai.ChatCompletionMessageParamUnion{
 		openai.SystemMessage("system"),
 		openai.UserMessage("hello"),
 	}}
-	first := a.totalChars()
+	first := h.totalChars()
 	if first <= 0 {
 		t.Fatalf("totalChars=%d, want >0", first)
 	}
-	a.messages = append(a.messages, makeAssistant("a long-ish reply with extra chars"))
-	if a.totalChars() <= first {
+	h.messages = append(h.messages, makeAssistant("a long-ish reply with extra chars"))
+	if h.totalChars() <= first {
 		t.Errorf("totalChars should grow when messages are added")
 	}
 }
 
 func TestCompactDisabledByDefault(t *testing.T) {
-	a := &Agent{
+	h := &history{
 		messages: []openai.ChatCompletionMessageParamUnion{
 			openai.SystemMessage("sys"),
 			openai.UserMessage("hello"),
 		},
 		maxContextTokens: 0,
 	}
-	before := len(a.messages)
-	a.compactIfNeeded()
-	if len(a.messages) != before {
-		t.Errorf("compaction should be disabled when maxContextTokens<=0; got %d→%d", before, len(a.messages))
+	before := len(h.messages)
+	h.compactIfNeeded()
+	if len(h.messages) != before {
+		t.Errorf("compaction should be disabled when maxContextTokens<=0; got %d→%d", before, len(h.messages))
 	}
-	if a.droppedTurns != 0 {
-		t.Errorf("droppedTurns=%d, want 0 when disabled", a.droppedTurns)
+	if h.droppedTurns != 0 {
+		t.Errorf("droppedTurns=%d, want 0 when disabled", h.droppedTurns)
 	}
 }
 
 func TestCompactNoOpUnderCap(t *testing.T) {
-	a := &Agent{
+	h := &history{
 		messages: []openai.ChatCompletionMessageParamUnion{
 			openai.SystemMessage("sys"),
 			openai.UserMessage("hi"),
@@ -79,13 +79,13 @@ func TestCompactNoOpUnderCap(t *testing.T) {
 		},
 		maxContextTokens: 30_000,
 	}
-	before := len(a.messages)
-	a.compactIfNeeded()
-	if len(a.messages) != before {
-		t.Errorf("nothing should be dropped under cap; got %d→%d", before, len(a.messages))
+	before := len(h.messages)
+	h.compactIfNeeded()
+	if len(h.messages) != before {
+		t.Errorf("nothing should be dropped under cap; got %d→%d", before, len(h.messages))
 	}
-	if a.droppedTurns != 0 {
-		t.Errorf("droppedTurns=%d, want 0", a.droppedTurns)
+	if h.droppedTurns != 0 {
+		t.Errorf("droppedTurns=%d, want 0", h.droppedTurns)
 	}
 }
 
@@ -99,17 +99,17 @@ func TestCompactDropsOldestTurn(t *testing.T) {
 			makeAssistant(strings.Repeat("a", 200)+itoa(i)),
 		)
 	}
-	a := &Agent{messages: msgs, maxContextTokens: 230}
+	h := &history{messages: msgs, maxContextTokens: 230}
 
-	a.compactIfNeeded()
+	h.compactIfNeeded()
 
-	if a.droppedTurns == 0 {
+	if h.droppedTurns == 0 {
 		t.Error("expected drops, got none")
 	}
 	// Last user message should be the most recent ("u4...").
 	lastUserIdx := -1
-	for i := len(a.messages) - 1; i >= 0; i-- {
-		if roleOf(a.messages[i]) == "user" {
+	for i := len(h.messages) - 1; i >= 0; i-- {
+		if roleOf(h.messages[i]) == "user" {
 			lastUserIdx = i
 			break
 		}
@@ -117,11 +117,11 @@ func TestCompactDropsOldestTurn(t *testing.T) {
 	if lastUserIdx < 0 {
 		t.Fatal("no user message remaining")
 	}
-	if got := a.estimateTokens(); got > a.maxContextTokens {
+	if got := h.estimateTokens(); got > h.maxContextTokens {
 		// Compaction is "best effort" — the shrinker only targets tool
 		// messages, so a last-turn user/assistant pair that alone exceeds
 		// the cap is tolerated.
-		t.Logf("estimateTokens=%d, cap=%d (acceptable if last turn alone exceeds cap)", got, a.maxContextTokens)
+		t.Logf("estimateTokens=%d, cap=%d (acceptable if last turn alone exceeds cap)", got, h.maxContextTokens)
 	}
 }
 
@@ -135,41 +135,41 @@ func TestCompactInsertsAndUpdatesElisionNote(t *testing.T) {
 			makeAssistant(strings.Repeat("a", 200)+itoa(i)),
 		)
 	}
-	a := &Agent{messages: msgs, maxContextTokens: 230}
+	h := &history{messages: msgs, maxContextTokens: 230}
 
-	a.compactIfNeeded()
-	firstDrops := a.droppedTurns
+	h.compactIfNeeded()
+	firstDrops := h.droppedTurns
 	if firstDrops == 0 {
 		t.Fatal("expected drops")
 	}
 
 	// Note should be at index 1 (right after the original system prompt) and be a system message.
-	if a.elisionNoteIdx == 0 {
+	if h.elisionNoteIdx == 0 {
 		t.Fatal("elisionNoteIdx not set")
 	}
-	if roleOf(a.messages[a.elisionNoteIdx]) != "system" {
-		t.Errorf("elision note should be a system message; got %q", roleOf(a.messages[a.elisionNoteIdx]))
+	if roleOf(h.messages[h.elisionNoteIdx]) != "system" {
+		t.Errorf("elision note should be a system message; got %q", roleOf(h.messages[h.elisionNoteIdx]))
 	}
-	noteJSON, _ := a.messages[a.elisionNoteIdx].MarshalJSON()
+	noteJSON, _ := h.messages[h.elisionNoteIdx].MarshalJSON()
 	if !strings.Contains(string(noteJSON), "earlier turn") {
 		t.Errorf("note content unexpected: %s", noteJSON)
 	}
 
 	// Add more turns so compaction runs again and updates the count.
 	for i := range 4 {
-		a.messages = append(a.messages,
+		h.messages = append(h.messages,
 			openai.UserMessage(strings.Repeat("U", 300)+itoa(i)),
 			makeAssistant(strings.Repeat("A", 300)+itoa(i)),
 		)
 	}
-	a.compactIfNeeded()
+	h.compactIfNeeded()
 
-	if a.droppedTurns <= firstDrops {
-		t.Errorf("expected more drops on second compaction: %d → %d", firstDrops, a.droppedTurns)
+	if h.droppedTurns <= firstDrops {
+		t.Errorf("expected more drops on second compaction: %d → %d", firstDrops, h.droppedTurns)
 	}
 	// Still exactly one elision note, and its count is current.
 	noteCount := 0
-	for _, m := range a.messages {
+	for _, m := range h.messages {
 		if roleOf(m) != "system" {
 			break
 		}
@@ -193,14 +193,13 @@ func TestCompactLogsCompactionEvent(t *testing.T) {
 		)
 	}
 	a := &Agent{
-		messages:         msgs,
-		maxContextTokens: 230,
-		logger:           &Logger{w: &buf},
+		history: &history{messages: msgs, maxContextTokens: 230},
+		logger:  &Logger{w: &buf},
 	}
 
 	a.compactIfNeeded()
 
-	if a.droppedTurns == 0 {
+	if a.history.droppedTurns == 0 {
 		t.Fatal("expected drops")
 	}
 
@@ -230,12 +229,14 @@ func TestCompactLogsCompactionEvent(t *testing.T) {
 func TestCompactNoEventWhenNoOp(t *testing.T) {
 	var buf bytes.Buffer
 	a := &Agent{
-		messages: []openai.ChatCompletionMessageParamUnion{
-			openai.SystemMessage("sys"),
-			openai.UserMessage("hi"),
+		history: &history{
+			messages: []openai.ChatCompletionMessageParamUnion{
+				openai.SystemMessage("sys"),
+				openai.UserMessage("hi"),
+			},
+			maxContextTokens: 30_000,
 		},
-		maxContextTokens: 30_000,
-		logger:           &Logger{w: &buf},
+		logger: &Logger{w: &buf},
 	}
 	a.compactIfNeeded()
 	if buf.Len() > 0 {
@@ -244,17 +245,17 @@ func TestCompactNoEventWhenNoOp(t *testing.T) {
 }
 
 func TestCompactKeepsAtLeastOneTurn(t *testing.T) {
-	a := &Agent{
+	h := &history{
 		messages: []openai.ChatCompletionMessageParamUnion{
 			openai.SystemMessage("sys"),
 			openai.UserMessage(strings.Repeat("x", 5000)),
 		},
 		maxContextTokens: 30,
 	}
-	a.compactIfNeeded()
+	h.compactIfNeeded()
 	// Even though we're way over cap, we can't drop the only user message.
 	hasUser := false
-	for _, m := range a.messages {
+	for _, m := range h.messages {
 		if roleOf(m) == "user" {
 			hasUser = true
 		}
@@ -265,11 +266,11 @@ func TestCompactKeepsAtLeastOneTurn(t *testing.T) {
 }
 
 func TestEstimateTokensUsesDefaultRatioWhenUncalibrated(t *testing.T) {
-	a := &Agent{messages: []openai.ChatCompletionMessageParamUnion{
+	h := &history{messages: []openai.ChatCompletionMessageParamUnion{
 		openai.UserMessage(strings.Repeat("x", 350)),
 	}}
-	chars := a.totalChars()
-	got := a.estimateTokens()
+	chars := h.totalChars()
+	got := h.estimateTokens()
 	// With defaultCharsPerToken=3.5, ceil(350/3.5) = 100, but totalChars also
 	// includes JSON overhead — sanity check the ratio, not the exact number.
 	if got <= 0 || got > chars {
@@ -278,30 +279,30 @@ func TestEstimateTokensUsesDefaultRatioWhenUncalibrated(t *testing.T) {
 }
 
 func TestRecordTokenUsageCalibrates(t *testing.T) {
-	a := &Agent{}
-	a.recordTokenUsage(1000, 250) // 4.0 chars/token
-	if a.charsPerToken != 4.0 {
-		t.Errorf("charsPerToken=%v, want 4.0", a.charsPerToken)
+	h := &history{}
+	h.recordTokenUsage(1000, 250) // 4.0 chars/token
+	if h.charsPerToken != 4.0 {
+		t.Errorf("charsPerToken=%v, want 4.0", h.charsPerToken)
 	}
 	// Zero/negative inputs must not clobber a good calibration.
-	a.recordTokenUsage(0, 100)
-	if a.charsPerToken != 4.0 {
-		t.Errorf("zero charsSent must not change calibration; got %v", a.charsPerToken)
+	h.recordTokenUsage(0, 100)
+	if h.charsPerToken != 4.0 {
+		t.Errorf("zero charsSent must not change calibration; got %v", h.charsPerToken)
 	}
-	a.recordTokenUsage(500, 0)
-	if a.charsPerToken != 4.0 {
-		t.Errorf("zero promptTokens must not change calibration; got %v", a.charsPerToken)
+	h.recordTokenUsage(500, 0)
+	if h.charsPerToken != 4.0 {
+		t.Errorf("zero promptTokens must not change calibration; got %v", h.charsPerToken)
 	}
 }
 
 func TestEstimateTokensUsesCalibratedRatio(t *testing.T) {
-	a := &Agent{messages: []openai.ChatCompletionMessageParamUnion{
+	h := &history{messages: []openai.ChatCompletionMessageParamUnion{
 		openai.UserMessage(strings.Repeat("x", 400)),
 	}}
-	before := a.estimateTokens()
+	before := h.estimateTokens()
 	// A looser ratio (more chars per token) should lower the estimate.
-	a.recordTokenUsage(1000, 100) // 10 chars/token
-	after := a.estimateTokens()
+	h.recordTokenUsage(1000, 100) // 10 chars/token
+	after := h.estimateTokens()
 	if after >= before {
 		t.Errorf("after calibration to 10 chars/token, estimate should drop: before=%d after=%d", before, after)
 	}
@@ -311,7 +312,7 @@ func TestCompactShrinksOversizedToolMessage(t *testing.T) {
 	// One turn with a huge tool reply — drop loop can't help, so the shrinker
 	// must kick in and truncate the tool message body until we fit.
 	huge := strings.Repeat("x", 10_000)
-	a := &Agent{
+	h := &history{
 		messages: []openai.ChatCompletionMessageParamUnion{
 			openai.SystemMessage("sys"),
 			openai.UserMessage("run a big command"),
@@ -320,14 +321,14 @@ func TestCompactShrinksOversizedToolMessage(t *testing.T) {
 		},
 		maxContextTokens: 600,
 	}
-	a.compactIfNeeded()
+	h.compactIfNeeded()
 
-	if got := a.estimateTokens(); got > a.maxContextTokens {
-		t.Errorf("shrink failed: estimateTokens=%d > cap=%d", got, a.maxContextTokens)
+	if got := h.estimateTokens(); got > h.maxContextTokens {
+		t.Errorf("shrink failed: estimateTokens=%d > cap=%d", got, h.maxContextTokens)
 	}
 	// Tool message must still exist and keep its tool_call_id so the pairing invariant holds.
 	var tool *openai.ChatCompletionToolMessageParam
-	for _, m := range a.messages {
+	for _, m := range h.messages {
 		if m.OfTool != nil {
 			tool = m.OfTool
 		}
@@ -346,31 +347,33 @@ func TestCompactShrinksOversizedToolMessage(t *testing.T) {
 
 func TestReset(t *testing.T) {
 	a := &Agent{
-		messages: []openai.ChatCompletionMessageParamUnion{
-			openai.SystemMessage("sys"),
-			openai.UserMessage("hi"),
-			makeAssistant("hello"),
-			openai.UserMessage("more"),
+		history: &history{
+			messages: []openai.ChatCompletionMessageParamUnion{
+				openai.SystemMessage("sys"),
+				openai.UserMessage("hi"),
+				makeAssistant("hello"),
+				openai.UserMessage("more"),
+			},
+			droppedTurns:   3,
+			elisionNoteIdx: 1,
 		},
-		droppedTurns:   3,
-		elisionNoteIdx: 1,
-		allowedTools:   map[string]bool{"bash": true},
-		alwaysAll:      true,
-		yolo:           false,
+		allowedTools: map[string]bool{"bash": true},
+		alwaysAll:    true,
+		yolo:         false,
 	}
 	a.Reset()
 
-	if len(a.messages) != 1 {
-		t.Errorf("Reset should leave only the system message; got %d messages", len(a.messages))
+	if len(a.history.messages) != 1 {
+		t.Errorf("Reset should leave only the system message; got %d messages", len(a.history.messages))
 	}
-	if roleOf(a.messages[0]) != "system" {
-		t.Errorf("first message should be system; got %q", roleOf(a.messages[0]))
+	if roleOf(a.history.messages[0]) != "system" {
+		t.Errorf("first message should be system; got %q", roleOf(a.history.messages[0]))
 	}
-	if a.droppedTurns != 0 {
-		t.Errorf("droppedTurns not reset: %d", a.droppedTurns)
+	if a.history.droppedTurns != 0 {
+		t.Errorf("droppedTurns not reset: %d", a.history.droppedTurns)
 	}
-	if a.elisionNoteIdx != 0 {
-		t.Errorf("elisionNoteIdx not reset: %d", a.elisionNoteIdx)
+	if a.history.elisionNoteIdx != 0 {
+		t.Errorf("elisionNoteIdx not reset: %d", a.history.elisionNoteIdx)
 	}
 	if len(a.allowedTools) != 0 {
 		t.Errorf("allowedTools not cleared: %v", a.allowedTools)
@@ -382,7 +385,7 @@ func TestReset(t *testing.T) {
 
 func TestResetPreservesYoloFlag(t *testing.T) {
 	a := &Agent{
-		messages:     []openai.ChatCompletionMessageParamUnion{openai.SystemMessage("sys"), openai.UserMessage("hi")},
+		history:      &history{messages: []openai.ChatCompletionMessageParamUnion{openai.SystemMessage("sys"), openai.UserMessage("hi")}},
 		yolo:         true,
 		alwaysAll:    true,
 		allowedTools: map[string]bool{},

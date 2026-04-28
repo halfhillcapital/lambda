@@ -215,7 +215,7 @@ func TestRun_CancelMidTurn_PreservesPairing(t *testing.T) {
 	}
 
 	asstIdx := -1
-	for i, m := range a.messages {
+	for i, m := range a.history.messages {
 		if m.OfAssistant != nil && len(m.OfAssistant.ToolCalls) > 0 {
 			asstIdx = i
 			break
@@ -224,7 +224,7 @@ func TestRun_CancelMidTurn_PreservesPairing(t *testing.T) {
 	if asstIdx < 0 {
 		t.Fatal("no assistant message with tool_calls in history")
 	}
-	asst := a.messages[asstIdx].OfAssistant
+	asst := a.history.messages[asstIdx].OfAssistant
 	asstIDs := map[string]bool{}
 	for _, tc := range asst.ToolCalls {
 		asstIDs[tc.ID] = true
@@ -232,7 +232,7 @@ func TestRun_CancelMidTurn_PreservesPairing(t *testing.T) {
 
 	toolIDs := map[string]bool{}
 	placeholders := 0
-	for _, m := range a.messages[asstIdx+1:] {
+	for _, m := range a.history.messages[asstIdx+1:] {
 		if m.OfTool == nil {
 			continue
 		}
@@ -291,9 +291,9 @@ func TestRun_RetryExhaustion_EmitsEventError(t *testing.T) {
 		t.Errorf("err missing 'upstream boom': %q", msg)
 	}
 
-	if n := len(a.messages); n == 0 || roleOf(a.messages[n-1]) != "user" {
+	if n := len(a.history.messages); n == 0 || roleOf(a.history.messages[n-1]) != "user" {
 		var roles []string
-		for _, m := range a.messages {
+		for _, m := range a.history.messages {
 			roles = append(roles, roleOf(m))
 		}
 		t.Errorf("history doesn't end at user message; roles=%v", roles)
@@ -471,7 +471,7 @@ func TestRun_DestructiveDenied_PreservesPairing(t *testing.T) {
 	}
 
 	var foundDenialMsg bool
-	for _, m := range a.messages {
+	for _, m := range a.history.messages {
 		if m.OfTool == nil {
 			continue
 		}
