@@ -20,6 +20,7 @@ type Config struct {
 	NoStream         bool
 	Yolo             bool
 	NoWorktree       bool
+	Debug            bool   // when true, append a JSONL debug log to debug.jsonl in the cwd
 	Prompt           string // -p one-shot prompt
 	Args             []string
 }
@@ -66,6 +67,7 @@ Examples:
 	fs.BoolVar(&c.NoStream, "no-stream", false, "disable streaming; print once complete")
 	fs.BoolVar(&c.Yolo, "yolo", false, "skip all confirmation prompts for destructive tools")
 	fs.BoolVar(&c.NoWorktree, "no-worktree", false, "run in the current checkout instead of an isolated git worktree")
+	fs.BoolVar(&c.Debug, "debug", false, "append JSONL debug records to debug.jsonl in the working directory")
 	fs.StringVar(&c.Prompt, "p", "", "one-shot prompt (alias for --prompt)")
 	fs.StringVar(&c.Prompt, "prompt", "", "one-shot prompt")
 

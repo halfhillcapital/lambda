@@ -62,7 +62,12 @@ func newUIModel(cfg *config.Config, systemPrompt string, pol agent.Policy, sessi
 		askCh:   make(chan confirmRequest, 1),
 		eventCh: make(chan agent.Event, 128),
 	}
-	m.agent = agent.New(cfg, systemPrompt, pol, m.confirmer)
+	logger, logErr := agent.OpenDebugLog(cfg)
+	m.agent = agent.New(cfg, systemPrompt, pol, m.confirmer, logger)
+	if logErr != nil {
+		// Stderr is hidden by the alt-screen, so surface this in the UI.
+		m.blocks = append(m.blocks, block{kind: blockNotice, text: "log file disabled: " + logErr.Error(), final: true})
+	}
 
 	ta := textarea.New()
 	ta.Placeholder = "Ask anything — Enter to send, Ctrl+J for newline, /help for commands, Ctrl+C to quit"
@@ -207,6 +212,7 @@ func Run(ctx context.Context, cfg *config.Config, systemPrompt string, pol agent
 	if err != nil {
 		return worktree.ActionKeep, err
 	}
+	defer m.agent.Close()
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	if _, err := p.Run(); err != nil {
 		return worktree.ActionKeep, err

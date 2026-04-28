@@ -28,7 +28,12 @@ func runOneShot(ctx context.Context, cfg *config.Config, systemPrompt string, po
 		return agent.DecisionDeny
 	}
 
-	a := agent.New(cfg, systemPrompt, pol, deny)
+	logger, err := agent.OpenDebugLog(cfg)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "lambda: log file disabled:", err)
+	}
+	a := agent.New(cfg, systemPrompt, pol, deny, logger)
+	defer a.Close()
 
 	events := make(chan agent.Event, 64)
 	go a.Run(ctx, userInput, events)

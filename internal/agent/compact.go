@@ -16,6 +16,12 @@ func (a *Agent) compactIfNeeded() {
 	if a.maxContextTokens <= 0 {
 		return
 	}
+	var beforeTokens, droppedAtStart, msgsBefore int
+	if a.logger != nil {
+		beforeTokens = a.estimateTokens()
+		droppedAtStart = a.droppedTurns
+		msgsBefore = len(a.messages)
+	}
 	for a.estimateTokens() > a.maxContextTokens {
 		headEnd := a.skipSystemHead()
 		from := a.firstUserAfter(headEnd)
@@ -31,10 +37,22 @@ func (a *Agent) compactIfNeeded() {
 		// The note (if any) was inside the leading-system run, so its index
 		// doesn't shift when we delete from `from` (which is past headEnd).
 	}
-	if a.estimateTokens() > a.maxContextTokens {
+	shrunk := a.estimateTokens() > a.maxContextTokens
+	if shrunk {
 		a.shrinkLargestToolMessages()
 	}
 	a.refreshElisionNote()
+	if a.logger != nil && (a.droppedTurns != droppedAtStart || shrunk) {
+		a.logger.Write("compaction", map[string]any{
+			"before_tokens":    beforeTokens,
+			"after_tokens":     a.estimateTokens(),
+			"limit":            a.maxContextTokens,
+			"turns_dropped":    a.droppedTurns - droppedAtStart,
+			"tool_msgs_shrunk": shrunk,
+			"msgs_before":      msgsBefore,
+			"msgs_after":       len(a.messages),
+		})
+	}
 }
 
 // shrinkLargestToolMessages truncates tool message bodies, largest first, until

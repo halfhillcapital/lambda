@@ -10,6 +10,7 @@ import (
 	"math/rand/v2"
 	"net"
 	"net/http"
+	"strings"
 	"syscall"
 	"time"
 
@@ -80,6 +81,8 @@ type Agent struct {
 	charsPerToken    float64 // running calibration from server-reported prompt_tokens; 0 means no data yet
 	droppedTurns     int
 	elisionNoteIdx   int // 0 = no note inserted yet
+
+	logger *Logger // nil when --debug is off
 }
 
 // defaultCharsPerToken is the fallback ratio used until the server reports
@@ -88,7 +91,10 @@ type Agent struct {
 // earlier compaction rather than blowing the context window).
 const defaultCharsPerToken = 3.5
 
-func New(cfg *config.Config, systemPrompt string, pol Policy, confirmer Confirmer) *Agent {
+// New constructs an Agent. logger may be nil to disable structured logging;
+// pair with OpenDebugLog if --debug is on. The agent takes ownership of
+// logger and closes it via Close.
+func New(cfg *config.Config, systemPrompt string, pol Policy, confirmer Confirmer, logger *Logger) *Agent {
 	// MaxRetries(0) disables the SDK's retry loop; withTransientRetry below is
 	// the canonical retry layer (classifies errors, surfaces failures via
 	// EventError, honors ctx cancellation during backoff).
@@ -98,7 +104,7 @@ func New(cfg *config.Config, systemPrompt string, pol Policy, confirmer Confirme
 		option.WithHTTPClient(newHTTPClient()),
 		option.WithMaxRetries(0),
 	)
-	return &Agent{
+	a := &Agent{
 		client:           client,
 		model:            cfg.Model,
 		tools:            tools.Schemas(),
@@ -111,7 +117,18 @@ func New(cfg *config.Config, systemPrompt string, pol Policy, confirmer Confirme
 		allowedTools:     map[string]bool{},
 		alwaysAll:        cfg.Yolo,
 		maxContextTokens: cfg.MaxContextTokens,
+		logger:           logger,
 	}
+	if logger != nil {
+		logger.Write("session_start", map[string]any{
+			"model":              cfg.Model,
+			"base_url":           cfg.BaseURL,
+			"max_steps":          cfg.MaxSteps,
+			"max_context_tokens": cfg.MaxContextTokens,
+			"streaming":          !cfg.NoStream,
+		})
+	}
+	return a
 }
 
 // ContextUsage reports the agent's current estimated prompt-token count and
@@ -120,6 +137,11 @@ func New(cfg *config.Config, systemPrompt string, pol Policy, confirmer Confirme
 // first completion it uses a char-based estimate.
 func (a *Agent) ContextUsage() (used, limit int) {
 	return a.estimateTokens(), a.maxContextTokens
+}
+
+// Close releases agent-owned resources (currently the debug log file).
+func (a *Agent) Close() error {
+	return a.logger.Close()
 }
 
 // Reset clears the conversation history (keeping the original system prompt)
@@ -144,6 +166,7 @@ func (a *Agent) Reset() {
 func (a *Agent) Run(ctx context.Context, userInput string, out chan<- Event) {
 	defer close(out)
 	a.messages = append(a.messages, openai.UserMessage(userInput))
+	a.logger.Write("turn_start", map[string]any{"input_chars": len(userInput)})
 
 	for step := 0; step < a.maxSteps; step++ {
 		assistant, err := a.completeOne(ctx, out)
@@ -151,14 +174,14 @@ func (a *Agent) Run(ctx context.Context, userInput string, out chan<- Event) {
 			// On ctx cancellation the TUI drives a close-channel signal; don't
 			// surface the wrapped-context error as an EventError.
 			if ctx.Err() == nil {
-				emit(ctx, out, EventError{Err: err})
+				a.emit(ctx, out, EventError{Err: err})
 			}
 			return
 		}
 		a.messages = append(a.messages, openai.ChatCompletionMessageParamUnion{OfAssistant: assistant})
 
 		if len(assistant.ToolCalls) == 0 {
-			emit(ctx, out, EventTurnDone{Reason: "done"})
+			a.emit(ctx, out, EventTurnDone{Reason: "done"})
 			return
 		}
 		for i, tc := range assistant.ToolCalls {
@@ -172,7 +195,7 @@ func (a *Agent) Run(ctx context.Context, userInput string, out chan<- Event) {
 			}
 		}
 	}
-	emit(ctx, out, EventTurnDone{Reason: fmt.Sprintf("hit iteration limit (%d steps)", a.maxSteps)})
+	a.emit(ctx, out, EventTurnDone{Reason: fmt.Sprintf("hit iteration limit (%d steps)", a.maxSteps)})
 }
 
 // completeOne issues one completion request and returns the assistant message
@@ -197,28 +220,45 @@ func (a *Agent) completeOne(ctx context.Context, out chan<- Event) (*openai.Chat
 		}
 	}
 
+	if a.logger != nil {
+		a.logger.Write("request", map[string]any{
+			"model":      a.model,
+			"msg_count":  len(a.messages),
+			"chars_sent": charsSent,
+			"est_tokens": a.estimateTokens(),
+			"streaming":  !a.noStream,
+			"tool_count": len(a.tools),
+		})
+	}
+
 	if a.noStream {
 		comp, err := withTransientRetry(ctx, func() (*openai.ChatCompletion, error) {
 			return a.client.Chat.Completions.New(ctx, params)
 		})
 		if err != nil {
+			a.logger.Write("response_error", map[string]any{"err": err.Error()})
 			return nil, humanizeError(err)
 		}
 		if len(comp.Choices) == 0 {
+			a.logger.Write("response_error", map[string]any{"err": "no choices"})
 			return nil, errors.New("model returned no choices")
 		}
 		a.recordTokenUsage(charsSent, comp.Usage.PromptTokens)
 		msg := comp.Choices[0].Message
+		a.logResponse(comp.Choices[0].FinishReason, msg.Content, extractReasoning(msg.JSON.ExtraFields), len(msg.ToolCalls), comp.Usage.PromptTokens, comp.Usage.CompletionTokens)
 		if r := extractReasoning(msg.JSON.ExtraFields); r != "" {
-			emit(ctx, out, EventThinkingDelta{Text: r})
+			a.emit(ctx, out, EventThinkingDelta{Text: r})
 		}
 		if msg.Content != "" {
-			emit(ctx, out, EventAssistantDone{Text: msg.Content})
+			a.emit(ctx, out, EventAssistantDone{Text: msg.Content})
 		}
 		return assistantFromMessage(msg), nil
 	}
 
-	var acc openai.ChatCompletionAccumulator
+	var (
+		acc       openai.ChatCompletionAccumulator
+		reasoning strings.Builder
+	)
 	stream := a.client.Chat.Completions.NewStreaming(ctx, params)
 	for stream.Next() {
 		chunk := stream.Current()
@@ -226,25 +266,50 @@ func (a *Agent) completeOne(ctx context.Context, out chan<- Event) (*openai.Chat
 		if len(chunk.Choices) > 0 {
 			delta := chunk.Choices[0].Delta
 			if r := extractReasoning(delta.JSON.ExtraFields); r != "" {
-				emit(ctx, out, EventThinkingDelta{Text: r})
+				if a.logger != nil {
+					reasoning.WriteString(r)
+				}
+				a.emit(ctx, out, EventThinkingDelta{Text: r})
 			}
 			if delta.Content != "" {
-				emit(ctx, out, EventContentDelta{Text: delta.Content})
+				a.emit(ctx, out, EventContentDelta{Text: delta.Content})
 			}
 		}
 	}
 	if err := stream.Err(); err != nil {
+		a.logger.Write("response_error", map[string]any{"err": err.Error()})
 		return nil, humanizeError(err)
 	}
 	if len(acc.Choices) == 0 {
+		a.logger.Write("response_error", map[string]any{"err": "no choices"})
 		return nil, errors.New("model returned no choices")
 	}
 	a.recordTokenUsage(charsSent, acc.Usage.PromptTokens)
 	msg := acc.Choices[0].Message
+	a.logResponse(acc.Choices[0].FinishReason, msg.Content, reasoning.String(), len(msg.ToolCalls), acc.Usage.PromptTokens, acc.Usage.CompletionTokens)
 	if msg.Content != "" {
-		emit(ctx, out, EventAssistantDone{Text: msg.Content})
+		a.emit(ctx, out, EventAssistantDone{Text: msg.Content})
 	}
 	return assistantFromMessage(msg), nil
+}
+
+// logResponse records one model completion to the debug log. Bodies are
+// truncated by truncBody so the log stays bounded for huge replies; the full
+// size is preserved in the *_chars fields.
+func (a *Agent) logResponse(finishReason, content, reasoning string, toolCalls int, promptTokens, completionTokens int64) {
+	if a.logger == nil {
+		return
+	}
+	a.logger.Write("response", map[string]any{
+		"finish_reason":     finishReason,
+		"content":           truncBody(content),
+		"content_chars":     len(content),
+		"reasoning":         truncBody(reasoning),
+		"reasoning_chars":   len(reasoning),
+		"tool_call_count":   toolCalls,
+		"prompt_tokens":     promptTokens,
+		"completion_tokens": completionTokens,
+	})
 }
 
 // handleToolCall handles one tool call, including the confirmation flow for
@@ -256,7 +321,7 @@ func (a *Agent) handleToolCall(ctx context.Context, tc openai.ChatCompletionMess
 
 	if tools.Name(name).IsDestructive() && !a.alwaysAll && !a.allowedTools[name] {
 		denied := func(reason string) bool {
-			emit(ctx, out, EventToolDenied{ID: tc.ID, Name: name})
+			a.emit(ctx, out, EventToolDenied{ID: tc.ID, Name: name})
 			a.messages = append(a.messages, openai.ToolMessage(reason+" denied this tool call", tc.ID))
 			return true
 		}
@@ -277,9 +342,9 @@ func (a *Agent) handleToolCall(ctx context.Context, tc openai.ChatCompletionMess
 		}
 	}
 
-	emit(ctx, out, EventToolStart{ID: tc.ID, Name: name, Args: args})
+	a.emit(ctx, out, EventToolStart{ID: tc.ID, Name: name, Args: args})
 	result := tools.Execute(ctx, name, args)
-	emit(ctx, out, EventToolResult{ID: tc.ID, Name: name, Result: result})
+	a.emit(ctx, out, EventToolResult{ID: tc.ID, Name: name, Result: result})
 	a.messages = append(a.messages, openai.ToolMessage(result, tc.ID))
 
 	return ctx.Err() == nil
@@ -402,7 +467,10 @@ func humanizeError(err error) error {
 	return fmt.Errorf("request failed: %w (is your local server running?)", err)
 }
 
-func emit(ctx context.Context, out chan<- Event, e Event) {
+func (a *Agent) emit(ctx context.Context, out chan<- Event, e Event) {
+	if a.logger != nil {
+		a.logger.Write(eventFields(e))
+	}
 	select {
 	case <-ctx.Done():
 	case out <- e:

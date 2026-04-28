@@ -229,7 +229,11 @@ func newAgentFull(t *testing.T, srv *scriptedServer, pol Policy, confirmer Confi
 	for _, m := range mutate {
 		m(cfg)
 	}
-	return New(cfg, "sys", pol, confirmer)
+	logger, err := OpenDebugLog(cfg)
+	if err != nil {
+		t.Fatalf("OpenDebugLog: %v", err)
+	}
+	return New(cfg, "sys", pol, confirmer, logger)
 }
 
 // drainEvents collects every event from out until the channel closes.

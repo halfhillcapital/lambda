@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -178,6 +180,66 @@ func TestCompactInsertsAndUpdatesElisionNote(t *testing.T) {
 	}
 	if noteCount != 1 {
 		t.Errorf("want exactly 1 elision note, got %d", noteCount)
+	}
+}
+
+func TestCompactLogsCompactionEvent(t *testing.T) {
+	var buf bytes.Buffer
+	msgs := []openai.ChatCompletionMessageParamUnion{openai.SystemMessage("sys")}
+	for i := range 5 {
+		msgs = append(msgs,
+			openai.UserMessage(strings.Repeat("u", 200)+itoa(i)),
+			makeAssistant(strings.Repeat("a", 200)+itoa(i)),
+		)
+	}
+	a := &Agent{
+		messages:         msgs,
+		maxContextTokens: 230,
+		logger:           &Logger{w: &buf},
+	}
+
+	a.compactIfNeeded()
+
+	if a.droppedTurns == 0 {
+		t.Fatal("expected drops")
+	}
+
+	var rec map[string]any
+	for line := range strings.SplitSeq(strings.TrimRight(buf.String(), "\n"), "\n") {
+		var r map[string]any
+		if err := json.Unmarshal([]byte(line), &r); err != nil {
+			t.Fatalf("bad JSONL line %q: %v", line, err)
+		}
+		if r["kind"] == "compaction" {
+			rec = r
+			break
+		}
+	}
+	if rec == nil {
+		t.Fatalf("no compaction record in log; got: %s", buf.String())
+	}
+	if got, _ := rec["turns_dropped"].(float64); got == 0 {
+		t.Errorf("turns_dropped = %v, want >0", rec["turns_dropped"])
+	}
+	if rec["before_tokens"].(float64) <= rec["after_tokens"].(float64) {
+		t.Errorf("expected before_tokens > after_tokens; got before=%v after=%v",
+			rec["before_tokens"], rec["after_tokens"])
+	}
+}
+
+func TestCompactNoEventWhenNoOp(t *testing.T) {
+	var buf bytes.Buffer
+	a := &Agent{
+		messages: []openai.ChatCompletionMessageParamUnion{
+			openai.SystemMessage("sys"),
+			openai.UserMessage("hi"),
+		},
+		maxContextTokens: 30_000,
+		logger:           &Logger{w: &buf},
+	}
+	a.compactIfNeeded()
+	if buf.Len() > 0 {
+		t.Errorf("no log expected when nothing was compacted; got %q", buf.String())
 	}
 }
 
