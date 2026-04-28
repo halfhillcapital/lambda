@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -37,27 +36,22 @@ func renderQuitModal(body string, width int) string {
 }
 
 func modalPreview(name, rawArgs string) string {
-	var m map[string]any
-	_ = json.Unmarshal([]byte(rawArgs), &m)
-	switch tools.Name(name) {
-	case tools.Bash:
-		cmd, _ := m["command"].(string)
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("#ffffff")).Render("$ " + cmd)
-	case tools.WriteFile:
-		p, _ := m["path"].(string)
-		c, _ := m["content"].(string)
-		lines := strings.Split(c, "\n")
+	switch name {
+	case tools.Bash.Name():
+		a, _ := tools.Bash.Decode(rawArgs)
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("#ffffff")).Render("$ " + a.Command)
+	case tools.Write.Name():
+		a, _ := tools.Write.Decode(rawArgs)
+		lines := strings.Split(a.Content, "\n")
 		preview := strings.Join(firstN(lines, 20), "\n")
-		head := toolOutStyle.Render(fmt.Sprintf("%s — %d bytes, %d lines", p, len(c), len(lines)))
+		head := toolOutStyle.Render(fmt.Sprintf("%s — %d bytes, %d lines", a.Path, len(a.Content), len(lines)))
 		if len(lines) > 20 {
 			preview += toolOutStyle.Render(fmt.Sprintf("\n… (%d more lines)", len(lines)-20))
 		}
 		return head + "\n" + toolOutStyle.Render(preview)
-	case tools.EditFile:
-		p, _ := m["path"].(string)
-		oldS, _ := m["old_string"].(string)
-		newS, _ := m["new_string"].(string)
-		return toolOutStyle.Render(p+":") + "\n" + renderDiff(oldS, newS)
+	case tools.Edit.Name():
+		a, _ := tools.Edit.Decode(rawArgs)
+		return toolOutStyle.Render(a.Path+":") + "\n" + renderDiff(a.OldString, a.NewString)
 	}
 	return toolOutStyle.Render(Truncate(rawArgs, 400))
 }

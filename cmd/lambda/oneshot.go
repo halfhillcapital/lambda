@@ -11,6 +11,7 @@ import (
 
 	"lambda/internal/agent"
 	"lambda/internal/config"
+	"lambda/internal/tools"
 	"lambda/internal/tui"
 )
 
@@ -32,7 +33,7 @@ func runOneShot(ctx context.Context, cfg *config.Config, systemPrompt string, po
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "lambda: log file disabled:", err)
 	}
-	a := agent.New(cfg, systemPrompt, pol, deny, logger)
+	a := agent.New(cfg, systemPrompt, tools.Default, pol, deny, logger)
 	defer a.Close()
 
 	events := make(chan agent.Event, 64)

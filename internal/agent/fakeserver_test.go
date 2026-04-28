@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"lambda/internal/config"
+	"lambda/internal/tools"
 )
 
 // recordedRequest holds the body of one request the fake server received.
@@ -233,7 +234,7 @@ func newAgentFull(t *testing.T, srv *scriptedServer, pol Policy, confirmer Confi
 	if err != nil {
 		t.Fatalf("OpenDebugLog: %v", err)
 	}
-	return New(cfg, "sys", pol, confirmer, logger)
+	return New(cfg, "sys", tools.Default, pol, confirmer, logger)
 }
 
 // drainEvents collects every event from out until the channel closes.

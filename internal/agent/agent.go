@@ -65,6 +65,7 @@ func (EventError) isEvent()         {}
 type Agent struct {
 	client    openai.Client
 	model     string
+	registry  tools.Registry
 	tools     []openai.ChatCompletionToolParam
 	history   *history
 	maxSteps  int
@@ -79,10 +80,11 @@ type Agent struct {
 	logger *Logger // nil when --debug is off
 }
 
-// New constructs an Agent. logger may be nil to disable structured logging;
-// pair with OpenDebugLog if --debug is on. The agent takes ownership of
-// logger and closes it via Close.
-func New(cfg *config.Config, systemPrompt string, pol Policy, confirmer Confirmer, logger *Logger) *Agent {
+// New constructs an Agent. registry is the tool registry the agent
+// dispatches against (use tools.Default for production). logger may be nil
+// to disable structured logging; pair with OpenDebugLog if --debug is on.
+// The agent takes ownership of logger and closes it via Close.
+func New(cfg *config.Config, systemPrompt string, registry tools.Registry, pol Policy, confirmer Confirmer, logger *Logger) *Agent {
 	// MaxRetries(0) disables the SDK's retry loop; withTransientRetry below is
 	// the canonical retry layer (classifies errors, surfaces failures via
 	// EventError, honors ctx cancellation during backoff).
@@ -95,7 +97,8 @@ func New(cfg *config.Config, systemPrompt string, pol Policy, confirmer Confirme
 	a := &Agent{
 		client:       client,
 		model:        cfg.Model,
-		tools:        tools.Schemas(),
+		registry:     registry,
+		tools:        registry.Schemas(),
 		history:      newHistory(systemPrompt, cfg.MaxContextTokens),
 		maxSteps:     cfg.MaxSteps,
 		noStream:     cfg.NoStream,
@@ -300,7 +303,8 @@ func (a *Agent) handleToolCall(ctx context.Context, tc openai.ChatCompletionMess
 	name := tc.Function.Name
 	args := tc.Function.Arguments
 
-	if tools.Name(name).IsDestructive() && !a.alwaysAll && !a.allowedTools[name] {
+	t, known := a.registry[name]
+	if known && t.IsDestructive() && !a.alwaysAll && !a.allowedTools[name] {
 		denied := func(reason string) bool {
 			a.emit(ctx, out, EventToolDenied{ID: tc.ID, Name: name})
 			a.history.messages = append(a.history.messages, openai.ToolMessage(reason+" denied this tool call", tc.ID))
@@ -324,7 +328,7 @@ func (a *Agent) handleToolCall(ctx context.Context, tc openai.ChatCompletionMess
 	}
 
 	a.emit(ctx, out, EventToolStart{ID: tc.ID, Name: name, Args: args})
-	result := tools.Execute(ctx, name, args)
+	result := a.registry.Execute(ctx, name, args)
 	a.emit(ctx, out, EventToolResult{ID: tc.ID, Name: name, Result: result})
 	a.history.messages = append(a.history.messages, openai.ToolMessage(result, tc.ID))
 

@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -85,26 +84,23 @@ func renderToolCall(name, rawArgs string) string {
 // TerseArgs renders a compact, human-readable summary of a tool's JSON arguments.
 // Exported for reuse by the non-interactive runner.
 func TerseArgs(name, rawArgs string) string {
-	var m map[string]any
-	if err := json.Unmarshal([]byte(rawArgs), &m); err != nil {
-		return Truncate(rawArgs, 120)
-	}
-	switch tools.Name(name) {
-	case tools.Bash:
-		if cmd, ok := m["command"].(string); ok {
-			return Truncate(cmd, 240)
+	switch name {
+	case tools.Bash.Name():
+		if a, err := tools.Bash.Decode(rawArgs); err == nil {
+			return Truncate(a.Command, 240)
 		}
-	case tools.ReadFile:
-		if p, ok := m["path"].(string); ok {
-			return p
+	case tools.Read.Name():
+		if a, err := tools.Read.Decode(rawArgs); err == nil {
+			return a.Path
 		}
-	case tools.WriteFile:
-		p, _ := m["path"].(string)
-		c, _ := m["content"].(string)
-		return fmt.Sprintf("%s (%d bytes)", p, len(c))
-	case tools.EditFile:
-		p, _ := m["path"].(string)
-		return p
+	case tools.Write.Name():
+		if a, err := tools.Write.Decode(rawArgs); err == nil {
+			return fmt.Sprintf("%s (%d bytes)", a.Path, len(a.Content))
+		}
+	case tools.Edit.Name():
+		if a, err := tools.Edit.Decode(rawArgs); err == nil {
+			return a.Path
+		}
 	}
 	return Truncate(rawArgs, 120)
 }

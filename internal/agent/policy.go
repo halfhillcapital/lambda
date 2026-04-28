@@ -8,10 +8,11 @@
 package agent
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"lambda/internal/tools"
 )
 
 // Verdict is the policy's decision on a candidate tool call.
@@ -52,10 +53,24 @@ func NewPolicy(sessionRoot string) Policy {
 	dangerous := dangerousWritePaths()
 	return func(name, rawArgs string) Verdict {
 		switch name {
-		case "write", "edit":
-			return evalWrite(rawArgs, root, dangerous)
-		case "bash":
-			return evalBash(rawArgs)
+		case tools.Write.Name():
+			a, err := tools.Write.Decode(rawArgs)
+			if err != nil {
+				return Prompt
+			}
+			return evalWritePath(a.Path, root, dangerous)
+		case tools.Edit.Name():
+			a, err := tools.Edit.Decode(rawArgs)
+			if err != nil {
+				return Prompt
+			}
+			return evalWritePath(a.Path, root, dangerous)
+		case tools.Bash.Name():
+			a, err := tools.Bash.Decode(rawArgs)
+			if err != nil {
+				return Prompt
+			}
+			return evalBashCommand(a.Command)
 		}
 		return Prompt
 	}
@@ -63,14 +78,14 @@ func NewPolicy(sessionRoot string) Policy {
 
 // --- write / edit ---
 
-func evalWrite(rawArgs, root string, dangerous []string) Verdict {
-	var a struct {
-		Path string `json:"path"`
-	}
-	if err := json.Unmarshal([]byte(rawArgs), &a); err != nil || a.Path == "" {
+// evalWritePath classifies a write/edit destination: AutoAllow inside the
+// session root (and outside any "dangerous" path like /etc or ~/.ssh),
+// Prompt anywhere else.
+func evalWritePath(p, root string, dangerous []string) Verdict {
+	if p == "" {
 		return Prompt
 	}
-	abs := a.Path
+	abs := p
 	if !filepath.IsAbs(abs) {
 		abs = filepath.Join(root, abs)
 	}
@@ -124,14 +139,14 @@ func isUnder(target, root string) bool {
 
 // --- bash ---
 
-func evalBash(rawArgs string) Verdict {
-	var a struct {
-		Command string `json:"command"`
-	}
-	if err := json.Unmarshal([]byte(rawArgs), &a); err != nil || a.Command == "" {
+// evalBashCommand classifies a bash command: AutoAllow when every pipeline
+// segment maps to an entry in the read-only allowlist (with no shell escapes
+// or denied flags), Prompt otherwise.
+func evalBashCommand(command string) Verdict {
+	cmd := strings.TrimSpace(command)
+	if cmd == "" {
 		return Prompt
 	}
-	cmd := strings.TrimSpace(a.Command)
 	if hasShellEscapes(cmd) {
 		return Prompt
 	}

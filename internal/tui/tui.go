@@ -15,6 +15,7 @@ import (
 
 	"lambda/internal/agent"
 	"lambda/internal/config"
+	"lambda/internal/tools"
 	"lambda/internal/worktree"
 )
 
@@ -63,7 +64,7 @@ func newUIModel(cfg *config.Config, systemPrompt string, pol agent.Policy, sessi
 		eventCh: make(chan agent.Event, 128),
 	}
 	logger, logErr := agent.OpenDebugLog(cfg)
-	m.agent = agent.New(cfg, systemPrompt, pol, m.confirmer, logger)
+	m.agent = agent.New(cfg, systemPrompt, tools.Default, pol, m.confirmer, logger)
 	if logErr != nil {
 		// Stderr is hidden by the alt-screen, so surface this in the UI.
 		m.blocks = append(m.blocks, block{kind: blockNotice, text: "log file disabled: " + logErr.Error(), final: true})
