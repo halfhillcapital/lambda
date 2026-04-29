@@ -476,8 +476,8 @@ func TestRun_DestructiveDenied_PreservesPairing(t *testing.T) {
 			continue
 		}
 		if m.OfTool.ToolCallID == "call_bash" {
-			if got := m.OfTool.Content.OfString.Value; got != "user denied this tool call" {
-				t.Errorf("denial tool message content = %q, want %q", got, "user denied this tool call")
+			if got := m.OfTool.Content.OfString.Value; got != "denied this tool call" {
+				t.Errorf("denial tool message content = %q, want %q", got, "denied this tool call")
 			}
 			foundDenialMsg = true
 		}

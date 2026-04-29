@@ -63,28 +63,25 @@ func (EventError) isEvent()         {}
 // Agent is the main tool-calling loop. It is not safe for concurrent use —
 // one turn at a time per agent.
 type Agent struct {
-	client    openai.Client
-	model     string
-	registry  tools.Registry
-	tools     []openai.ChatCompletionToolParam
-	history   *history
-	maxSteps  int
-	noStream  bool
-	yolo      bool
-	policy    Policy
-	confirmer Confirmer
-
-	allowedTools map[string]bool
-	alwaysAll    bool
+	client   openai.Client
+	model    string
+	registry tools.Registry
+	tools    []openai.ChatCompletionToolParam
+	history  *history
+	maxSteps int
+	noStream bool
+	approver *Approver
 
 	logger *Logger // nil when --debug is off
 }
 
 // New constructs an Agent. registry is the tool registry the agent
-// dispatches against (use tools.Default for production). logger may be nil
-// to disable structured logging; pair with OpenDebugLog if --debug is on.
-// The agent takes ownership of logger and closes it via Close.
-func New(cfg *config.Config, systemPrompt string, registry tools.Registry, pol Policy, confirmer Confirmer, logger *Logger) *Agent {
+// dispatches against (use tools.Default for production). approver is the
+// single owner of destructive-tool approval (build it with NewApprover).
+// logger may be nil to disable structured logging; pair with OpenDebugLog
+// if --debug is on. The agent takes ownership of logger and closes it via
+// Close.
+func New(cfg *config.Config, systemPrompt string, registry tools.Registry, approver *Approver, logger *Logger) *Agent {
 	// MaxRetries(0) disables the SDK's retry loop; withTransientRetry below is
 	// the canonical retry layer (classifies errors, surfaces failures via
 	// EventError, honors ctx cancellation during backoff).
@@ -95,19 +92,15 @@ func New(cfg *config.Config, systemPrompt string, registry tools.Registry, pol P
 		option.WithMaxRetries(0),
 	)
 	a := &Agent{
-		client:       client,
-		model:        cfg.Model,
-		registry:     registry,
-		tools:        registry.Schemas(),
-		history:      newHistory(systemPrompt, cfg.MaxContextTokens),
-		maxSteps:     cfg.MaxSteps,
-		noStream:     cfg.NoStream,
-		yolo:         cfg.Yolo,
-		policy:       pol,
-		confirmer:    confirmer,
-		allowedTools: map[string]bool{},
-		alwaysAll:    cfg.Yolo,
-		logger:       logger,
+		client:   client,
+		model:    cfg.Model,
+		registry: registry,
+		tools:    registry.Schemas(),
+		history:  newHistory(systemPrompt, cfg.MaxContextTokens),
+		maxSteps: cfg.MaxSteps,
+		noStream: cfg.NoStream,
+		approver: approver,
+		logger:   logger,
 	}
 	if logger != nil {
 		logger.Write("session_start", map[string]any{
@@ -139,8 +132,7 @@ func (a *Agent) Close() error {
 // like /new.
 func (a *Agent) Reset() {
 	a.history.reset()
-	a.allowedTools = map[string]bool{}
-	a.alwaysAll = a.yolo
+	a.approver.Reset()
 }
 
 // Run executes one user turn: append the user message, then loop requesting
@@ -182,8 +174,24 @@ func (a *Agent) Run(ctx context.Context, userInput string, out chan<- Event) {
 	a.emit(ctx, out, EventTurnDone{Reason: fmt.Sprintf("hit iteration limit (%d steps)", a.maxSteps)})
 }
 
+// fetchResult is the canonical outcome of one completion request,
+// uniform across streaming and non-streaming modes.
+type fetchResult struct {
+	msg              openai.ChatCompletionMessage
+	reasoning        string // captured for the response log record
+	finishReason     string
+	promptTokens     int64
+	completionTokens int64
+}
+
+// errNoChoices is returned by fetchCompletion when the response has zero
+// choices. Caller-distinguishable from SDK errors so it bypasses
+// humanizeError (which would wrap it as a transport failure).
+var errNoChoices = errors.New("model returned no choices")
+
 // completeOne issues one completion request and returns the assistant message
-// to append to the history, streaming content deltas into out along the way.
+// to append to the history. Streaming-vs-non hides behind fetchCompletion;
+// post-processing is uniform.
 func (a *Agent) completeOne(ctx context.Context, out chan<- Event) (*openai.ChatCompletionAssistantMessageParam, error) {
 	a.compactIfNeeded()
 	// Snapshot the char count of the exact message set we're sending; pairs
@@ -204,39 +212,60 @@ func (a *Agent) completeOne(ctx context.Context, out chan<- Event) (*openai.Chat
 		}
 	}
 
-	if a.logger != nil {
-		a.logger.Write("request", map[string]any{
-			"model":      a.model,
-			"msg_count":  len(a.history.messages),
-			"chars_sent": charsSent,
-			"est_tokens": a.history.estimateTokens(),
-			"streaming":  !a.noStream,
-			"tool_count": len(a.tools),
-		})
+	a.logger.Write("request", map[string]any{
+		"model":      a.model,
+		"msg_count":  len(a.history.messages),
+		"chars_sent": charsSent,
+		"est_tokens": a.history.estimateTokens(),
+		"streaming":  !a.noStream,
+		"tool_count": len(a.tools),
+	})
+
+	res, err := a.fetchCompletion(ctx, params, out)
+	if err != nil {
+		if errors.Is(err, errNoChoices) {
+			a.logger.Write("response_error", map[string]any{"err": "no choices"})
+			return nil, err
+		}
+		a.logger.Write("response_error", map[string]any{"err": err.Error()})
+		return nil, humanizeError(err)
 	}
 
+	a.history.recordTokenUsage(charsSent, res.promptTokens)
+	a.logResponse(res.finishReason, res.msg.Content, res.reasoning, len(res.msg.ToolCalls), res.promptTokens, res.completionTokens)
+	if res.msg.Content != "" {
+		a.emit(ctx, out, EventAssistantDone{Text: res.msg.Content})
+	}
+	return assistantFromMessage(res.msg), nil
+}
+
+// fetchCompletion issues one completion request and returns its canonical
+// outcome. Streaming and non-streaming paths both emit content/thinking
+// deltas on out *during* the fetch, so post-processing in completeOne is
+// uniform: no events emitted post-fetch except the final AssistantDone.
+func (a *Agent) fetchCompletion(ctx context.Context, params openai.ChatCompletionNewParams, out chan<- Event) (fetchResult, error) {
 	if a.noStream {
 		comp, err := withTransientRetry(ctx, func() (*openai.ChatCompletion, error) {
 			return a.client.Chat.Completions.New(ctx, params)
 		})
 		if err != nil {
-			a.logger.Write("response_error", map[string]any{"err": err.Error()})
-			return nil, humanizeError(err)
+			return fetchResult{}, err
 		}
 		if len(comp.Choices) == 0 {
-			a.logger.Write("response_error", map[string]any{"err": "no choices"})
-			return nil, errors.New("model returned no choices")
+			return fetchResult{}, errNoChoices
 		}
-		a.history.recordTokenUsage(charsSent, comp.Usage.PromptTokens)
 		msg := comp.Choices[0].Message
-		a.logResponse(comp.Choices[0].FinishReason, msg.Content, extractReasoning(msg.JSON.ExtraFields), len(msg.ToolCalls), comp.Usage.PromptTokens, comp.Usage.CompletionTokens)
-		if r := extractReasoning(msg.JSON.ExtraFields); r != "" {
-			a.emit(ctx, out, EventThinkingDelta{Text: r})
+		reasoning := extractReasoning(msg.JSON.ExtraFields)
+		if reasoning != "" {
+			a.emit(ctx, out, EventThinkingDelta{Text: reasoning})
 		}
-		if msg.Content != "" {
-			a.emit(ctx, out, EventAssistantDone{Text: msg.Content})
-		}
-		return assistantFromMessage(msg), nil
+		return fetchResult{
+			msg:              msg,
+			reasoning:        reasoning,
+			finishReason:     comp.Choices[0].FinishReason,
+			promptTokens:     comp.Usage.PromptTokens,
+			completionTokens: comp.Usage.CompletionTokens,
+		}, nil
 	}
 
 	var (
@@ -261,20 +290,18 @@ func (a *Agent) completeOne(ctx context.Context, out chan<- Event) (*openai.Chat
 		}
 	}
 	if err := stream.Err(); err != nil {
-		a.logger.Write("response_error", map[string]any{"err": err.Error()})
-		return nil, humanizeError(err)
+		return fetchResult{}, err
 	}
 	if len(acc.Choices) == 0 {
-		a.logger.Write("response_error", map[string]any{"err": "no choices"})
-		return nil, errors.New("model returned no choices")
+		return fetchResult{}, errNoChoices
 	}
-	a.history.recordTokenUsage(charsSent, acc.Usage.PromptTokens)
-	msg := acc.Choices[0].Message
-	a.logResponse(acc.Choices[0].FinishReason, msg.Content, reasoning.String(), len(msg.ToolCalls), acc.Usage.PromptTokens, acc.Usage.CompletionTokens)
-	if msg.Content != "" {
-		a.emit(ctx, out, EventAssistantDone{Text: msg.Content})
-	}
-	return assistantFromMessage(msg), nil
+	return fetchResult{
+		msg:              acc.Choices[0].Message,
+		reasoning:        reasoning.String(),
+		finishReason:     acc.Choices[0].FinishReason,
+		promptTokens:     acc.Usage.PromptTokens,
+		completionTokens: acc.Usage.CompletionTokens,
+	}, nil
 }
 
 // logResponse records one model completion to the debug log. Bodies are
@@ -303,28 +330,10 @@ func (a *Agent) handleToolCall(ctx context.Context, tc openai.ChatCompletionMess
 	name := tc.Function.Name
 	args := tc.Function.Arguments
 
-	t, known := a.registry[name]
-	if known && t.IsDestructive() && !a.alwaysAll && !a.allowedTools[name] {
-		denied := func(reason string) bool {
-			a.emit(ctx, out, EventToolDenied{ID: tc.ID, Name: name})
-			a.history.messages = append(a.history.messages, openai.ToolMessage(reason+" denied this tool call", tc.ID))
-			return true
-		}
-		switch a.policy(name, args) {
-		case AutoAllow:
-			// Skip the user prompt entirely.
-		case AutoDeny:
-			return denied("policy")
-		default:
-			switch a.confirmer(ctx, name, args) {
-			case DecisionDeny:
-				return denied("user")
-			case DecisionAlwaysTool:
-				a.allowedTools[name] = true
-			case DecisionAlwaysAll:
-				a.alwaysAll = true
-			}
-		}
+	if t, known := a.registry[name]; known && t.IsDestructive() && !a.approver.Allow(ctx, name, args) {
+		a.emit(ctx, out, EventToolDenied{ID: tc.ID, Name: name})
+		a.history.messages = append(a.history.messages, openai.ToolMessage("denied this tool call", tc.ID))
+		return ctx.Err() == nil
 	}
 
 	a.emit(ctx, out, EventToolStart{ID: tc.ID, Name: name, Args: args})

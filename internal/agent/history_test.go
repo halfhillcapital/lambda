@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -346,6 +347,14 @@ func TestCompactShrinksOversizedToolMessage(t *testing.T) {
 }
 
 func TestReset(t *testing.T) {
+	approver := NewApprover(
+		func(string, string) Verdict { return Prompt },
+		func(context.Context, string, string) Decision { return DecisionDeny },
+		false,
+	)
+	approver.allowedTools["bash"] = true
+	approver.alwaysAll = true
+
 	a := &Agent{
 		history: &history{
 			messages: []openai.ChatCompletionMessageParamUnion{
@@ -357,9 +366,7 @@ func TestReset(t *testing.T) {
 			droppedTurns:   3,
 			elisionNoteIdx: 1,
 		},
-		allowedTools: map[string]bool{"bash": true},
-		alwaysAll:    true,
-		yolo:         false,
+		approver: approver,
 	}
 	a.Reset()
 
@@ -375,24 +382,13 @@ func TestReset(t *testing.T) {
 	if a.history.elisionNoteIdx != 0 {
 		t.Errorf("elisionNoteIdx not reset: %d", a.history.elisionNoteIdx)
 	}
-	if len(a.allowedTools) != 0 {
-		t.Errorf("allowedTools not cleared: %v", a.allowedTools)
+	// Agent.Reset must delegate to approver.Reset (covered in detail in
+	// approver_test.go; this is the integration check).
+	if len(approver.allowedTools) != 0 {
+		t.Errorf("approver.allowedTools not cleared: %v", approver.allowedTools)
 	}
-	if a.alwaysAll {
-		t.Error("alwaysAll should reset to false when yolo=false")
-	}
-}
-
-func TestResetPreservesYoloFlag(t *testing.T) {
-	a := &Agent{
-		history:      &history{messages: []openai.ChatCompletionMessageParamUnion{openai.SystemMessage("sys"), openai.UserMessage("hi")}},
-		yolo:         true,
-		alwaysAll:    true,
-		allowedTools: map[string]bool{},
-	}
-	a.Reset()
-	if !a.alwaysAll {
-		t.Error("alwaysAll should stay true after Reset when yolo=true (the flag persists)")
+	if approver.alwaysAll {
+		t.Error("approver.alwaysAll should revert to yolo (false) after Reset")
 	}
 }
 
