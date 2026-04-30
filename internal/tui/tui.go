@@ -33,6 +33,9 @@ type uiModel struct {
 	turnCancel context.CancelFunc
 	turnActive bool
 	stepsUsed  int
+	// turn is incremented on every startTurn so stale messages from a
+	// previous turn's event channel can be filtered out.
+	turn int
 
 	viewport viewport.Model
 	input    textarea.Model
@@ -49,7 +52,11 @@ type uiModel struct {
 	chosenAction worktree.Action
 
 	width, height int
-	errMsg        string
+	// inputRows is the number of visual rows the input box currently shows.
+	// The textarea's own height is pinned to maxInputRows so its internal
+	// viewport never has to scroll when the cursor crosses a wrap; we crop
+	// the rendered output to inputRows in footer().
+	inputRows int
 }
 
 type quitModalState struct {
@@ -74,14 +81,20 @@ func newUIModel(cfg *config.Config, systemPrompt string, registry tools.Registry
 	}
 
 	ta := textarea.New()
-	ta.Placeholder = "Ask anything — Enter to send, Ctrl+J for newline, /help for commands, Ctrl+C to quit"
-	ta.Prompt = "│ "
+	ta.Placeholder = "Ask anything — Enter to send, Alt+Enter for newline, /help for commands, Ctrl+C to quit"
+	ta.SetPromptFunc(2, func(lineIdx int) string {
+		if lineIdx == 0 {
+			return "> "
+		}
+		return "  "
+	})
 	ta.ShowLineNumbers = false
 	ta.CharLimit = 0
 	ta.KeyMap.InsertNewline.SetEnabled(false)
-	ta.SetHeight(3)
+	ta.SetHeight(maxInputRows)
 	ta.Focus()
 	m.input = ta
+	m.inputRows = 1
 
 	vp := viewport.New(80, 20)
 	vp.SetContent("")
@@ -119,7 +132,7 @@ func (m *uiModel) Init() tea.Cmd {
 		textarea.Blink,
 		m.spinner.Tick,
 		m.waitForAsk(),
-		m.waitForEvent(),
+		waitForEvent(m.eventCh, m.turn),
 	)
 }
 
@@ -146,6 +159,8 @@ func (m *uiModel) View() string {
 }
 
 func (m *uiModel) footer() string {
+	inputBox := inputBoxStyle.Width(m.width).Render(cropLines(m.input.View(), m.inputRows))
+
 	statusL := statusStyle.Render(fmt.Sprintf("%s @ %s", m.cfg.Model, m.cfg.BaseURL))
 	tokens := m.renderTokenUsage()
 	sep := statusStyle.Render(" · ")
@@ -160,7 +175,7 @@ func (m *uiModel) footer() string {
 		pad = 1
 	}
 	status := statusL + strings.Repeat(" ", pad) + statusR
-	return status + "\n" + m.input.View()
+	return inputBox + "\n" + status
 }
 
 // renderTokenUsage returns a colored "used/cap" summary (or just "used" when
@@ -193,18 +208,65 @@ func formatTokenCount(n int) string {
 }
 
 func (m *uiModel) layout() {
-	inputH := m.input.Height()
-	if inputH < 3 {
-		inputH = 3
+	inputH := m.inputRows
+	if inputH < 1 {
+		inputH = 1
 	}
-	// viewport height = total - input - statusbar - spacing
-	vh := m.height - inputH - 2
+	// viewport height = total - input - input borders (2) - statusbar - spacing
+	vh := m.height - inputH - 4
 	if vh < 3 {
 		vh = 3
 	}
 	m.viewport.Width = m.width
 	m.viewport.Height = vh
 	m.input.SetWidth(m.width)
+}
+
+// maxInputRows caps the auto-grow so the input cannot eat the transcript.
+const maxInputRows = 10
+
+// adjustInputHeight recomputes the visual (soft-wrapped) row count for the
+// current input and re-runs layout when it changes. The textarea's own height
+// stays pinned to maxInputRows so its internal viewport never scrolls; we
+// crop the rendered output to inputRows in footer().
+func (m *uiModel) adjustInputHeight() {
+	contentW := m.input.Width()
+	if contentW < 1 {
+		contentW = 1
+	}
+	want := 0
+	for _, line := range strings.Split(m.input.Value(), "\n") {
+		w := lipgloss.Width(line)
+		if w == 0 {
+			want++
+		} else {
+			want += (w + contentW - 1) / contentW
+		}
+	}
+	if want < 1 {
+		want = 1
+	}
+	if want > maxInputRows {
+		want = maxInputRows
+	}
+	if want != m.inputRows {
+		m.inputRows = want
+		m.layout()
+	}
+}
+
+// cropLines returns the first n lines of s joined by "\n". Used to trim the
+// textarea's fixed-height render down to the visual rows we actually want
+// to show.
+func cropLines(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	parts := strings.SplitN(s, "\n", n+1)
+	if len(parts) > n {
+		parts = parts[:n]
+	}
+	return strings.Join(parts, "\n")
 }
 
 // Run starts the Bubble Tea REPL. It blocks until the program exits and

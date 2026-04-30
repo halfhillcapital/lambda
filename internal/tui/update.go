@@ -33,12 +33,25 @@ func (m *uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.waitForAsk()
 
 	case agentEventMsg:
+		if msg.turn != m.turn {
+			return m, nil // stale waiter from a previous turn
+		}
 		m.handleEvent(msg.ev)
-		cmds = append(cmds, m.waitForEvent())
+		cmds = append(cmds, waitForEvent(m.eventCh, m.turn))
+
+	case quitSummaryMsg:
+		if !msg.hasChanges {
+			return m, tea.Quit
+		}
+		m.quitModal = quitModalState{active: true, body: msg.body}
+		return m, nil
 
 	case turnEndedMsg:
 		// Catch-all for turn exit without a TurnDone/Error event (ctx cancel
 		// drops in-flight emits); TurnDone/Error already cleared turnActive.
+		if msg.turn != m.turn {
+			return m, nil // stale close from a previous turn
+		}
 		if m.turnActive {
 			m.finalizeOpenThinking()
 			m.turnActive = false
@@ -64,10 +77,11 @@ func (m *uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.turnCancel()
 				return m, nil
 			}
-			if m.tryOpenQuitModal() {
-				return m, nil
+			if m.session == nil {
+				return m, tea.Quit
 			}
-			return m, tea.Quit
+			m.input.Blur()
+			return m, m.summarizeForQuit()
 		case "enter":
 			text := strings.TrimSpace(m.input.Value())
 			if text == "" || m.turnActive {
@@ -78,8 +92,9 @@ func (m *uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			return m, m.startTurn(text)
-		case "ctrl+j":
+		case "alt+enter", "ctrl+j":
 			m.input.InsertString("\n")
+			m.adjustInputHeight()
 			return m, nil
 		case "pgup":
 			m.viewport.ScrollUp(m.viewport.Height / 2)
@@ -93,6 +108,7 @@ func (m *uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var tcmd, vcmd tea.Cmd
 	m.input, tcmd = m.input.Update(msg)
 	m.viewport, vcmd = m.viewport.Update(msg)
+	m.adjustInputHeight()
 	cmds = append(cmds, tcmd, vcmd)
 	return m, tea.Batch(cmds...)
 }
@@ -102,6 +118,7 @@ func (m *uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // append a notice. No model call is made.
 func (m *uiModel) handleSlashCommand(text string) {
 	m.input.Reset()
+	m.adjustInputHeight()
 	cmd := strings.Fields(text)[0]
 	switch cmd {
 	case "/new", "/clear":
@@ -109,27 +126,22 @@ func (m *uiModel) handleSlashCommand(text string) {
 		m.blocks = nil
 		m.blocks = append(m.blocks, block{kind: blockNotice, text: "started a new conversation", final: true})
 	case "/help":
-		m.blocks = append(m.blocks, block{kind: blockNotice, text: "commands: /new (or /clear) to reset · /help · Ctrl+C to cancel turn or quit · Ctrl+J for newline · PgUp/PgDn to scroll", final: true})
+		m.blocks = append(m.blocks, block{kind: blockNotice, text: "commands: /new (or /clear) to reset · /help · Ctrl+C to cancel turn or quit · Alt+Enter (or Shift+Enter with /terminal-setup) for newline · PgUp/PgDn to scroll", final: true})
 	default:
 		m.blocks = append(m.blocks, block{kind: blockError, text: "unknown command: " + cmd + " (try /help)", final: true})
 	}
 	m.refreshViewport()
 }
 
-// tryOpenQuitModal returns true and opens the quit modal if the worktree
-// session has changes worth deciding on; otherwise returns false so the
-// caller can quit immediately.
-func (m *uiModel) tryOpenQuitModal() bool {
-	if m.session == nil {
-		return false
+// summarizeForQuit asks the worktree session for a change summary off the UI
+// thread and posts a quitSummaryMsg with the result. Update handles the
+// message: no changes → quit immediately; changes → open the quit modal.
+func (m *uiModel) summarizeForQuit() tea.Cmd {
+	session := m.session
+	return func() tea.Msg {
+		body, hasChanges := session.Summary(context.Background())
+		return quitSummaryMsg{body: body, hasChanges: hasChanges}
 	}
-	body, hasChanges := m.session.Summary(context.Background())
-	if !hasChanges {
-		return false
-	}
-	m.quitModal = quitModalState{active: true, body: body}
-	m.input.Blur()
-	return true
 }
 
 func (m *uiModel) handleQuitKey(msg tea.KeyMsg) tea.Cmd {
@@ -173,16 +185,20 @@ func (m *uiModel) handleConfirmKey(msg tea.KeyMsg) tea.Cmd {
 
 func (m *uiModel) startTurn(userInput string) tea.Cmd {
 	m.input.Reset()
+	m.adjustInputHeight()
 	m.blocks = append(m.blocks, block{kind: blockUser, text: userInput, final: true})
 	m.refreshViewport()
 
 	m.turnCtx, m.turnCancel = context.WithCancel(context.Background())
 	m.turnActive = true
 	m.stepsUsed = 0
-	m.errMsg = ""
+	m.turn++
 
-	// Replace eventCh per turn: Run closes it when done.
+	// Replace eventCh per turn: Run closes it when done. Stale waiters
+	// holding the previous channel will simply observe its close and
+	// produce a turnEndedMsg tagged with the old turn id, which Update
+	// drops.
 	m.eventCh = make(chan agent.Event, 128)
 	go m.agent.Run(m.turnCtx, userInput, m.eventCh)
-	return m.waitForEvent()
+	return waitForEvent(m.eventCh, m.turn)
 }

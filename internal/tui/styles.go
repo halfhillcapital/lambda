@@ -28,6 +28,9 @@ var (
 				Border(lipgloss.RoundedBorder()).
 				BorderForeground(lipgloss.Color("#ffaf5f")).
 				Padding(0, 1)
+	inputBoxStyle = lipgloss.NewStyle().
+			Border(lipgloss.NormalBorder(), true, false).
+			BorderForeground(lipgloss.Color("#3a3a3a"))
 	diffAddStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#87ff87"))
 	diffDelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#ff5f5f"))
 )

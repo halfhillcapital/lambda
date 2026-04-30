@@ -11,9 +11,16 @@ import (
 
 // --- messages / events plumbing ---
 
-type agentEventMsg struct{ ev agent.Event }
-type turnEndedMsg struct{} // event channel closed; ensures turnActive always clears
+type agentEventMsg struct {
+	ev   agent.Event
+	turn int
+}
+type turnEndedMsg struct{ turn int } // event channel closed; ensures turnActive always clears
 type askMsg struct{ req *confirmRequest }
+type quitSummaryMsg struct {
+	body       string
+	hasChanges bool
+}
 
 type confirmRequest struct {
 	name, args string
@@ -30,13 +37,16 @@ func (m *uiModel) waitForAsk() tea.Cmd {
 	}
 }
 
-func (m *uiModel) waitForEvent() tea.Cmd {
+// waitForEvent captures the channel and turn id at scheduling time so a
+// stale waiter from a previous turn (its channel since closed by Run) can't
+// pull from — or be confused with — the new turn's channel.
+func waitForEvent(ch <-chan agent.Event, turn int) tea.Cmd {
 	return func() tea.Msg {
-		ev, ok := <-m.eventCh
+		ev, ok := <-ch
 		if !ok {
-			return turnEndedMsg{}
+			return turnEndedMsg{turn: turn}
 		}
-		return agentEventMsg{ev: ev}
+		return agentEventMsg{ev: ev, turn: turn}
 	}
 }
 
@@ -80,6 +90,7 @@ func (m *uiModel) handleEvent(ev agent.Event) {
 		}
 		m.blocks[len(m.blocks)-1].final = true
 	case agent.EventToolStart:
+		m.finalizeOpenThinking()
 		m.stepsUsed++
 		summary := m.renderToolCall(e.Name, e.Args)
 		m.blocks = append(m.blocks, block{kind: blockTool, tool: e.Name, text: summary, final: false})

@@ -38,19 +38,32 @@ func renderQuitModal(body string, width int) string {
 func modalPreview(name, rawArgs string) string {
 	switch name {
 	case tools.Bash.Name():
-		a, _ := tools.Bash.Decode(rawArgs)
+		a, err := tools.Bash.Decode(rawArgs)
+		if err != nil {
+			break
+		}
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("#ffffff")).Render("$ " + a.Command)
 	case tools.Write.Name():
-		a, _ := tools.Write.Decode(rawArgs)
+		a, err := tools.Write.Decode(rawArgs)
+		if err != nil {
+			break
+		}
 		lines := strings.Split(a.Content, "\n")
-		preview := strings.Join(firstN(lines, 20), "\n")
+		shown := lines
+		if len(shown) > 20 {
+			shown = shown[:20]
+		}
+		preview := strings.Join(shown, "\n")
 		head := toolOutStyle.Render(fmt.Sprintf("%s — %d bytes, %d lines", a.Path, len(a.Content), len(lines)))
 		if len(lines) > 20 {
 			preview += toolOutStyle.Render(fmt.Sprintf("\n… (%d more lines)", len(lines)-20))
 		}
 		return head + "\n" + toolOutStyle.Render(preview)
 	case tools.Edit.Name():
-		a, _ := tools.Edit.Decode(rawArgs)
+		a, err := tools.Edit.Decode(rawArgs)
+		if err != nil {
+			break
+		}
 		return toolOutStyle.Render(a.Path+":") + "\n" + renderDiff(a.OldString, a.NewString)
 	}
 	return toolOutStyle.Render(tools.Truncate(rawArgs, 400))
@@ -67,9 +80,3 @@ func renderDiff(oldS, newS string) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-func firstN[T any](s []T, n int) []T {
-	if len(s) < n {
-		return s
-	}
-	return s[:n]
-}
