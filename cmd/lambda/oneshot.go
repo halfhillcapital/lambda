@@ -19,7 +19,7 @@ import (
 // tool activity to stderr, and returns the process exit code when the turn
 // completes. It never calls os.Exit directly so the caller's deferred
 // cleanup (notably worktree teardown) runs on every path.
-func runOneShot(ctx context.Context, cfg *config.Config, systemPrompt string, pol agent.Policy, userInput string) int {
+func runOneShot(ctx context.Context, cfg *config.Config, systemPrompt string, registry tools.Registry, userInput string) int {
 	stderrIsTTY := term.IsTerminal(int(os.Stderr.Fd()))
 
 	// In non-interactive mode we cannot prompt; the agent treats all destructive
@@ -33,8 +33,8 @@ func runOneShot(ctx context.Context, cfg *config.Config, systemPrompt string, po
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "lambda: log file disabled:", err)
 	}
-	approver := agent.NewApprover(pol, deny, cfg.Yolo)
-	a := agent.New(cfg, systemPrompt, tools.Default, approver, logger)
+	approver := agent.NewApprover(registry, deny, cfg.Yolo)
+	a := agent.New(cfg, systemPrompt, registry, approver, logger)
 	defer a.Close()
 
 	events := make(chan agent.Event, 64)
@@ -63,11 +63,11 @@ func runOneShot(ctx context.Context, cfg *config.Config, systemPrompt string, po
 			}
 			fmt.Fprintln(os.Stdout)
 		case agent.EventToolStart:
-			fmt.Fprintln(os.Stderr, toolColor("→ "+e.Name+" "+tui.TerseArgs(e.Name, e.Args)))
+			fmt.Fprintln(os.Stderr, toolColor("→ "+e.Name+" "+registry.Summarize(e.Name, e.Args)))
 		case agent.EventToolResult:
 			// Truncated preview goes to stderr so piping stdout stays clean.
 			if first := firstLine(e.Result); first != "" {
-				fmt.Fprintln(os.Stderr, "  "+tui.Truncate(first, 200))
+				fmt.Fprintln(os.Stderr, "  "+tools.Truncate(first, 200))
 			}
 		case agent.EventToolDenied:
 			fmt.Fprintln(os.Stderr, "  (denied)")

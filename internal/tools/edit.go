@@ -19,13 +19,19 @@ type EditArgs struct {
 	ReplaceAll bool   `json:"replace_all"`
 }
 
-type editTool struct{}
+// editTool is parameterized by sessionRoot for Classify; other methods
+// don't depend on root.
+type editTool struct{ root string }
 
-// Edit is the singleton instance of the edit tool.
+// Edit is the zero-root singleton. See Write for the same pattern.
 var Edit editTool
 
-func (editTool) Name() string        { return "edit" }
-func (editTool) IsDestructive() bool { return true }
+// NewEdit returns an editTool bound to a session root.
+func NewEdit(sessionRoot string) editTool {
+	return editTool{root: sessionRoot}
+}
+
+func (editTool) Name() string { return "edit" }
 
 func (editTool) Schema() openai.ChatCompletionToolParam {
 	return makeSchema(Edit.Name(),
@@ -48,6 +54,24 @@ func (editTool) Decode(rawArgs string) (EditArgs, error) {
 		return a, err
 	}
 	return a, nil
+}
+
+// Classify checks the edit destination against the session root, same rules
+// as write.
+func (e editTool) Classify(rawArgs string) Verdict {
+	a, err := Edit.Decode(rawArgs)
+	if err != nil {
+		return Prompt
+	}
+	return classifyWritePath(a.Path, e.root)
+}
+
+// Summarize returns the path being edited.
+func (editTool) Summarize(rawArgs string) string {
+	if a, err := Edit.Decode(rawArgs); err == nil {
+		return a.Path
+	}
+	return Truncate(rawArgs, 120)
 }
 
 func (editTool) Execute(_ context.Context, rawArgs string) string {

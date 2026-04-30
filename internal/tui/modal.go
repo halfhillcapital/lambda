@@ -53,7 +53,7 @@ func modalPreview(name, rawArgs string) string {
 		a, _ := tools.Edit.Decode(rawArgs)
 		return toolOutStyle.Render(a.Path+":") + "\n" + renderDiff(a.OldString, a.NewString)
 	}
-	return toolOutStyle.Render(Truncate(rawArgs, 400))
+	return toolOutStyle.Render(tools.Truncate(rawArgs, 400))
 }
 
 func renderDiff(oldS, newS string) string {

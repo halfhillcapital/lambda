@@ -203,22 +203,22 @@ func cannedError(msg string) map[string]any {
 	}
 }
 
-// newAgent wires an Agent against the fake server in non-streaming mode using
-// a no-op policy and a confirmer that fails the test if called. Suitable for
-// tests that don't exercise destructive tools.
+// newAgent wires an Agent against the fake server in non-streaming mode with
+// the default registry and a confirmer that fails the test if called.
+// Suitable for tests that don't exercise the destructive-tool confirmation
+// flow (read is auto-allow; bash defers to its allowlist).
 func newAgent(t *testing.T, srv *scriptedServer, mutate ...func(*config.Config)) *Agent {
 	t.Helper()
-	pol := func(name, rawArgs string) Verdict { return Prompt }
 	confirmer := func(ctx context.Context, name, args string) Decision {
 		t.Fatalf("confirmer called unexpectedly: name=%s args=%s", name, args)
 		return DecisionDeny
 	}
-	return newAgentFull(t, srv, pol, confirmer, mutate...)
+	return newAgentFull(t, srv, tools.New(""), confirmer, mutate...)
 }
 
-// newAgentFull is newAgent with an explicit policy and confirmer; used by
-// tests that exercise the destructive-tool confirmation flow.
-func newAgentFull(t *testing.T, srv *scriptedServer, pol Policy, confirmer Confirmer, mutate ...func(*config.Config)) *Agent {
+// newAgentFull is newAgent with an explicit registry and confirmer; used by
+// tests that exercise the confirmation flow.
+func newAgentFull(t *testing.T, srv *scriptedServer, registry tools.Registry, confirmer Confirmer, mutate ...func(*config.Config)) *Agent {
 	t.Helper()
 	cfg := &config.Config{
 		BaseURL:  srv.URL,
@@ -234,8 +234,8 @@ func newAgentFull(t *testing.T, srv *scriptedServer, pol Policy, confirmer Confi
 	if err != nil {
 		t.Fatalf("OpenDebugLog: %v", err)
 	}
-	approver := NewApprover(pol, confirmer, cfg.Yolo)
-	return New(cfg, "sys", tools.Default, approver, logger)
+	approver := NewApprover(registry, confirmer, cfg.Yolo)
+	return New(cfg, "sys", registry, approver, logger)
 }
 
 // drainEvents collects every event from out until the channel closes.

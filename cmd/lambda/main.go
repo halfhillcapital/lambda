@@ -14,9 +14,9 @@ import (
 
 	"golang.org/x/term"
 
-	"lambda/internal/agent"
 	"lambda/internal/config"
 	"lambda/internal/prompt"
+	"lambda/internal/tools"
 	"lambda/internal/tui"
 	"lambda/internal/worktree"
 )
@@ -59,10 +59,10 @@ func run() int {
 	}
 
 	systemPrompt := prompt.Build(session.Cwd())
-	pol := agent.NewPolicy(session.Cwd())
+	registry := tools.New(session.Cwd())
 
 	if p, ok := resolveOneShotPrompt(cfg); ok {
-		return runOneShot(ctx, cfg, systemPrompt, pol, p)
+		return runOneShot(ctx, cfg, systemPrompt, registry, p)
 	}
 
 	if !term.IsTerminal(int(os.Stdout.Fd())) {
@@ -70,7 +70,7 @@ func run() int {
 		return 2
 	}
 
-	action, err := tui.Run(ctx, cfg, systemPrompt, pol, session)
+	action, err := tui.Run(ctx, cfg, systemPrompt, registry, session)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1

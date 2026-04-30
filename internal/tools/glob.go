@@ -29,8 +29,22 @@ type globTool struct{}
 // Glob is the singleton instance of the glob tool.
 var Glob globTool
 
-func (globTool) Name() string        { return "glob" }
-func (globTool) IsDestructive() bool { return false }
+func (globTool) Name() string { return "glob" }
+
+// Classify always returns AutoAllow: glob just lists files.
+func (globTool) Classify(string) Verdict { return AutoAllow }
+
+// Summarize returns the glob pattern (with optional path scope).
+func (globTool) Summarize(rawArgs string) string {
+	if a, err := Glob.Decode(rawArgs); err == nil {
+		s := a.Pattern
+		if a.Path != "" {
+			s += " in " + a.Path
+		}
+		return Truncate(s, 120)
+	}
+	return Truncate(rawArgs, 120)
+}
 
 func (globTool) Schema() openai.ChatCompletionToolParam {
 	return makeSchema(Glob.Name(),

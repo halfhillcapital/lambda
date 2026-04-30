@@ -22,11 +22,12 @@ import (
 // --- model ---
 
 type uiModel struct {
-	cfg     *config.Config
-	agent   *agent.Agent
-	session *worktree.Session
-	askCh   chan confirmRequest
-	eventCh chan agent.Event
+	cfg      *config.Config
+	agent    *agent.Agent
+	registry tools.Registry
+	session  *worktree.Session
+	askCh    chan confirmRequest
+	eventCh  chan agent.Event
 
 	turnCtx    context.Context
 	turnCancel context.CancelFunc
@@ -56,16 +57,17 @@ type quitModalState struct {
 	body   string
 }
 
-func newUIModel(cfg *config.Config, systemPrompt string, pol agent.Policy, session *worktree.Session) (*uiModel, error) {
+func newUIModel(cfg *config.Config, systemPrompt string, registry tools.Registry, session *worktree.Session) (*uiModel, error) {
 	m := &uiModel{
-		cfg:     cfg,
-		session: session,
-		askCh:   make(chan confirmRequest, 1),
-		eventCh: make(chan agent.Event, 128),
+		cfg:      cfg,
+		registry: registry,
+		session:  session,
+		askCh:    make(chan confirmRequest, 1),
+		eventCh:  make(chan agent.Event, 128),
 	}
 	logger, logErr := agent.OpenDebugLog(cfg)
-	approver := agent.NewApprover(pol, m.confirmer, cfg.Yolo)
-	m.agent = agent.New(cfg, systemPrompt, tools.Default, approver, logger)
+	approver := agent.NewApprover(registry, m.confirmer, cfg.Yolo)
+	m.agent = agent.New(cfg, systemPrompt, registry, approver, logger)
 	if logErr != nil {
 		// Stderr is hidden by the alt-screen, so surface this in the UI.
 		m.blocks = append(m.blocks, block{kind: blockNotice, text: "log file disabled: " + logErr.Error(), final: true})
@@ -209,8 +211,8 @@ func (m *uiModel) layout() {
 // returns the user's keep/discard choice for the worktree session. The
 // returned action is ActionKeep when the user never reaches the quit
 // modal (e.g. clean session, or worktree disabled).
-func Run(ctx context.Context, cfg *config.Config, systemPrompt string, pol agent.Policy, session *worktree.Session) (worktree.Action, error) {
-	m, err := newUIModel(cfg, systemPrompt, pol, session)
+func Run(ctx context.Context, cfg *config.Config, systemPrompt string, registry tools.Registry, session *worktree.Session) (worktree.Action, error) {
+	m, err := newUIModel(cfg, systemPrompt, registry, session)
 	if err != nil {
 		return worktree.ActionKeep, err
 	}

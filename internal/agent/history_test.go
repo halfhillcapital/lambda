@@ -9,6 +9,8 @@ import (
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/packages/param"
+
+	"lambda/internal/tools"
 )
 
 // makeAssistant builds an assistant message with text content for tests.
@@ -348,7 +350,7 @@ func TestCompactShrinksOversizedToolMessage(t *testing.T) {
 
 func TestReset(t *testing.T) {
 	approver := NewApprover(
-		func(string, string) Verdict { return Prompt },
+		tools.Registry{},
 		func(context.Context, string, string) Decision { return DecisionDeny },
 		false,
 	)

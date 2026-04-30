@@ -26,8 +26,18 @@ type readTool struct{}
 // Read is the singleton instance of the read tool.
 var Read readTool
 
-func (readTool) Name() string        { return "read" }
-func (readTool) IsDestructive() bool { return false }
+func (readTool) Name() string { return "read" }
+
+// Classify always returns AutoAllow: read is, well, read-only.
+func (readTool) Classify(string) Verdict { return AutoAllow }
+
+// Summarize returns the path being read.
+func (readTool) Summarize(rawArgs string) string {
+	if a, err := Read.Decode(rawArgs); err == nil {
+		return a.Path
+	}
+	return Truncate(rawArgs, 120)
+}
 
 func (readTool) Schema() openai.ChatCompletionToolParam {
 	return makeSchema(Read.Name(),

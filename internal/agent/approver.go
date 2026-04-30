@@ -1,14 +1,18 @@
 package agent
 
-import "context"
+import (
+	"context"
 
-// Approver decides whether a destructive tool call may proceed and records
-// any session-level allowlist updates the user requests along the way. It is
-// the single owner of "may this call run?" — folding together the yolo
-// bypass, the per-session allowlist (`alwaysAll`, `allowedTools`), the
-// static Policy, and the interactive Confirmer round-trip.
+	"lambda/internal/tools"
+)
+
+// Approver decides whether a tool call may proceed and records any
+// session-level allowlist updates the user requests along the way. It folds
+// together the yolo bypass, the per-session allowlist (`alwaysAll`,
+// `allowedTools`), each tool's static Classify verdict, and the interactive
+// Confirmer round-trip.
 type Approver struct {
-	policy    Policy
+	registry  tools.Registry
 	confirmer Confirmer
 
 	yolo         bool
@@ -17,12 +21,12 @@ type Approver struct {
 }
 
 // NewApprover builds an Approver. yolo (typically the --yolo flag) bypasses
-// every check and is also the value alwaysAll resets to. policy is the
-// static rule layer; confirmer is the interactive fallback, invoked only
-// when both the policy and the session allowlist defer.
-func NewApprover(policy Policy, confirmer Confirmer, yolo bool) *Approver {
+// every check and is also the value alwaysAll resets to. registry supplies
+// the per-tool Classify rule layer; confirmer is the interactive fallback,
+// invoked only when both the tool's verdict and the session allowlist defer.
+func NewApprover(registry tools.Registry, confirmer Confirmer, yolo bool) *Approver {
 	return &Approver{
-		policy:       policy,
+		registry:     registry,
 		confirmer:    confirmer,
 		yolo:         yolo,
 		alwaysAll:    yolo,
@@ -30,17 +34,22 @@ func NewApprover(policy Policy, confirmer Confirmer, yolo bool) *Approver {
 	}
 }
 
-// Allow reports whether the destructive tool call (name, rawArgs) may
-// proceed. Session state (alwaysAll, allowedTools) is updated internally
-// when the confirmer's reply asks for it.
+// Allow reports whether the tool call (name, rawArgs) may proceed. Session
+// state (alwaysAll, allowedTools) is updated internally when the confirmer's
+// reply asks for it. Unknown tool names are allowed through so the registry
+// can produce its own "schema error: unknown tool" message.
 func (a *Approver) Allow(ctx context.Context, name, rawArgs string) bool {
 	if a.alwaysAll || a.allowedTools[name] {
 		return true
 	}
-	switch a.policy(name, rawArgs) {
-	case AutoAllow:
+	tool, known := a.registry[name]
+	if !known {
 		return true
-	case AutoDeny:
+	}
+	switch tool.Classify(rawArgs) {
+	case tools.AutoAllow:
+		return true
+	case tools.AutoDeny:
 		return false
 	}
 	switch a.confirmer(ctx, name, rawArgs) {

@@ -81,7 +81,7 @@ func (m *uiModel) handleEvent(ev agent.Event) {
 		m.blocks[len(m.blocks)-1].final = true
 	case agent.EventToolStart:
 		m.stepsUsed++
-		summary := renderToolCall(e.Name, e.Args)
+		summary := m.renderToolCall(e.Name, e.Args)
 		m.blocks = append(m.blocks, block{kind: blockTool, tool: e.Name, text: summary, final: false})
 	case agent.EventToolResult:
 		if n := len(m.blocks); n > 0 && m.blocks[n-1].kind == blockTool && !m.blocks[n-1].final {

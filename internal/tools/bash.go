@@ -31,8 +31,25 @@ type bashTool struct{}
 // Bash is the singleton instance of the bash tool.
 var Bash bashTool
 
-func (bashTool) Name() string        { return "bash" }
-func (bashTool) IsDestructive() bool { return true }
+func (bashTool) Name() string { return "bash" }
+
+// Classify defers to the bash allowlist: AutoAllow for read-only pipelines
+// in the allowlist, Prompt for anything else (writes, network, shell escapes).
+func (bashTool) Classify(rawArgs string) Verdict {
+	a, err := Bash.Decode(rawArgs)
+	if err != nil {
+		return Prompt
+	}
+	return classifyBashCommand(a.Command)
+}
+
+// Summarize returns the (truncated) command line.
+func (bashTool) Summarize(rawArgs string) string {
+	if a, err := Bash.Decode(rawArgs); err == nil {
+		return Truncate(a.Command, 240)
+	}
+	return Truncate(rawArgs, 120)
+}
 
 func (bashTool) Schema() openai.ChatCompletionToolParam {
 	return makeSchema(Bash.Name(),

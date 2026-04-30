@@ -1,6 +1,7 @@
 // Package tools implements the built-in tools the agent dispatches against:
 // read, write, edit, grep, glob, and bash. Each tool lives in its own file
-// and exposes a singleton; Default is the registry shipped with lambda.
+// and exposes a singleton; New(sessionRoot) builds the registry shipped with
+// lambda, binding session-aware tools (write, edit) to the given root.
 package tools
 
 import (
@@ -13,32 +14,36 @@ import (
 	"github.com/openai/openai-go/shared"
 )
 
-// Tool is the uniform shape the agent dispatches against: a name, a JSON
-// schema describing the call, a destructiveness classification (drives the
-// confirmation flow), and an Execute that runs the tool against raw JSON
-// arguments.
+// Tool is the uniform shape the agent dispatches against. Each tool answers
+// for itself: how it's named to the model (Name/Schema), how its arguments
+// render in UI (Summarize), whether a pending call is safe to run unattended
+// (Classify), and how to actually run it (Execute).
 //
 // Concrete tool singletons (Read, Write, …) also expose a typed Decode
-// method so policy and TUI layers can read fields like "path" or "command"
-// without re-unmarshalling the JSON. Decode is *not* on this interface
-// because each tool's argument struct is a different type.
+// method so callers needing rich previews (e.g. the modal diff) can read
+// fields like "path" or "command" without re-unmarshalling. Decode is *not*
+// on this interface because each tool's argument struct is a different type.
 type Tool interface {
 	Name() string
 	Schema() openai.ChatCompletionToolParam
-	IsDestructive() bool
+	Summarize(rawArgs string) string
+	Classify(rawArgs string) Verdict
 	Execute(ctx context.Context, rawArgs string) string
 }
 
-// Registry maps a tool's name to the tool itself. Default is the registry
-// shipped with lambda; tests can build their own with custom or fake tools.
+// Registry maps a tool's name to the tool itself. Build one with New(root);
+// tests can compose their own with custom or fake tools.
 type Registry map[string]Tool
 
-// Default is the agent's built-in registry: read, write, edit, grep, glob, bash.
-var Default = mustBuild(Read, Write, Edit, Grep, Glob, Bash)
+// New assembles the agent's built-in registry. sessionRoot is the agent's
+// working directory (typically the worktree path) used by write/edit to
+// classify whether a destination is "inside the session" — pass "" if no
+// session root applies (writes will always Prompt).
+func New(sessionRoot string) Registry {
+	return mustBuild(Read, Grep, Glob, Bash, NewWrite(sessionRoot), NewEdit(sessionRoot))
+}
 
-// mustBuild assembles a Registry, panicking on duplicate names. Used to
-// build Default at package init; tests can either reuse Default or compose
-// their own (typically with one or two fake tools).
+// mustBuild assembles a Registry, panicking on duplicate names.
 func mustBuild(tools ...Tool) Registry {
 	r := make(Registry, len(tools))
 	for _, t := range tools {
@@ -71,6 +76,17 @@ func (r Registry) Execute(ctx context.Context, name, rawArgs string) string {
 	return t.Execute(ctx, rawArgs)
 }
 
+// Summarize returns a one-line human-readable summary of a pending tool
+// call's arguments, or a generic truncated dump if the tool is unknown.
+// Used by UI layers (TUI footer, oneshot stderr) without their needing to
+// know about specific tools.
+func (r Registry) Summarize(name, rawArgs string) string {
+	if t, ok := r[name]; ok {
+		return t.Summarize(rawArgs)
+	}
+	return Truncate(rawArgs, 120)
+}
+
 // decodeArgs unmarshals a tool's raw JSON arguments into a typed struct.
 // Empty input is treated as `{}` so tools with all-optional fields can be
 // called with no arguments.
@@ -93,6 +109,17 @@ func schemaErr(err error) string { return "schema error: " + err.Error() }
 // execErr formats a runtime failure with the "error:" prefix — the call
 // ran but failed (file not found, exit code, timeout, …).
 func execErr(err error) string { return "error: " + err.Error() }
+
+// Truncate trims s to at most n runes (approx), appending an ellipsis if
+// clipped. Used by Summarize implementations and as the registry's fallback
+// rendering for unknown tools.
+func Truncate(s string, n int) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= n {
+		return s
+	}
+	return s[:n-1] + "…"
+}
 
 // --- schema construction helpers ---
 

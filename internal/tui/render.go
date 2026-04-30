@@ -3,8 +3,6 @@ package tui
 import (
 	"fmt"
 	"strings"
-
-	"lambda/internal/tools"
 )
 
 // --- transcript blocks ---
@@ -76,33 +74,8 @@ func (m *uiModel) renderBlock(b block) string {
 
 // --- tool call rendering ---
 
-func renderToolCall(name, rawArgs string) string {
-	head := ToolCallStyle.Render("→ "+name) + " " + toolOutStyle.Render(TerseArgs(name, rawArgs))
-	return head
-}
-
-// TerseArgs renders a compact, human-readable summary of a tool's JSON arguments.
-// Exported for reuse by the non-interactive runner.
-func TerseArgs(name, rawArgs string) string {
-	switch name {
-	case tools.Bash.Name():
-		if a, err := tools.Bash.Decode(rawArgs); err == nil {
-			return Truncate(a.Command, 240)
-		}
-	case tools.Read.Name():
-		if a, err := tools.Read.Decode(rawArgs); err == nil {
-			return a.Path
-		}
-	case tools.Write.Name():
-		if a, err := tools.Write.Decode(rawArgs); err == nil {
-			return fmt.Sprintf("%s (%d bytes)", a.Path, len(a.Content))
-		}
-	case tools.Edit.Name():
-		if a, err := tools.Edit.Decode(rawArgs); err == nil {
-			return a.Path
-		}
-	}
-	return Truncate(rawArgs, 120)
+func (m *uiModel) renderToolCall(name, rawArgs string) string {
+	return ToolCallStyle.Render("→ "+name) + " " + toolOutStyle.Render(m.registry.Summarize(name, rawArgs))
 }
 
 func clipResult(s string) string {
@@ -126,12 +99,3 @@ func indentLines(s, prefix string) string {
 	return strings.Join(lines, "\n")
 }
 
-// Truncate trims s to at most n runes (approx), appending an ellipsis if clipped.
-// Exported for reuse by the non-interactive runner.
-func Truncate(s string, n int) string {
-	s = strings.TrimSpace(s)
-	if len(s) <= n {
-		return s
-	}
-	return s[:n-1] + "…"
-}

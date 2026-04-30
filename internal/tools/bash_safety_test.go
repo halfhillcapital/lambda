@@ -1,21 +1,11 @@
-package agent
+package tools
 
 import (
 	"encoding/json"
-	"path/filepath"
 	"testing"
 )
 
-func writeArgs(t *testing.T, path string) string {
-	t.Helper()
-	b, err := json.Marshal(map[string]string{"path": path, "content": "x"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(b)
-}
-
-func bashArgs(t *testing.T, cmd string) string {
+func bashClassifyArgs(t *testing.T, cmd string) string {
 	t.Helper()
 	b, err := json.Marshal(map[string]string{"command": cmd})
 	if err != nil {
@@ -24,84 +14,7 @@ func bashArgs(t *testing.T, cmd string) string {
 	return string(b)
 }
 
-func TestWritePathsInsideRootAutoAllow(t *testing.T) {
-	root := t.TempDir()
-	pol := NewPolicy(root)
-	cases := []string{
-		"foo.go",
-		"sub/bar.go",
-		filepath.Join(root, "absolute.go"),
-	}
-	for _, p := range cases {
-		t.Run(p, func(t *testing.T) {
-			if got := pol("write", writeArgs(t, p)); got != AutoAllow {
-				t.Errorf("write %q: got %v, want AutoAllow", p, got)
-			}
-			if got := pol("edit", writeArgs(t, p)); got != AutoAllow {
-				t.Errorf("edit %q: got %v, want AutoAllow", p, got)
-			}
-		})
-	}
-}
-
-func TestWritePathsOutsideRootPrompt(t *testing.T) {
-	root := t.TempDir()
-	outside := filepath.Join(filepath.Dir(root), "outside-"+filepath.Base(root), "x.go")
-	pol := NewPolicy(root)
-	cases := []string{
-		"../outside.go",
-		"../../way/outside.go",
-		outside, // absolute path on this platform, guaranteed outside root
-	}
-	for _, p := range cases {
-		t.Run(p, func(t *testing.T) {
-			if got := pol("write", writeArgs(t, p)); got != Prompt {
-				t.Errorf("write %q: got %v, want Prompt", p, got)
-			}
-		})
-	}
-}
-
-func TestWriteBadArgsPrompt(t *testing.T) {
-	pol := NewPolicy(t.TempDir())
-	cases := []string{
-		"",           // not JSON
-		"{}",         // no path
-		`{"path":""}`, // empty path
-		"not json",
-	}
-	for _, a := range cases {
-		t.Run(a, func(t *testing.T) {
-			if got := pol("write", a); got != Prompt {
-				t.Errorf("args=%q: got %v, want Prompt", a, got)
-			}
-		})
-	}
-}
-
-func TestIsUnder(t *testing.T) {
-	root := string(filepath.Separator) + filepath.Join("some", "root")
-	cases := []struct {
-		target string
-		want   bool
-	}{
-		{filepath.Join(root, "a.go"), true},
-		{filepath.Join(root, "sub", "a.go"), true},
-		{root, true},
-		{filepath.Join(string(filepath.Separator), "some", "root2", "a.go"), false},
-		{filepath.Join(string(filepath.Separator), "elsewhere"), false},
-	}
-	for _, c := range cases {
-		t.Run(c.target, func(t *testing.T) {
-			if got := isUnder(c.target, root); got != c.want {
-				t.Errorf("isUnder(%q, %q) = %v, want %v", c.target, root, got, c.want)
-			}
-		})
-	}
-}
-
-func TestBashAutoAllow(t *testing.T) {
-	pol := NewPolicy(t.TempDir())
+func TestBashClassify_AutoAllow(t *testing.T) {
 	cases := []string{
 		"ls",
 		"ls -la",
@@ -134,15 +47,14 @@ func TestBashAutoAllow(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c, func(t *testing.T) {
-			if got := pol("bash", bashArgs(t, c)); got != AutoAllow {
+			if got := Bash.Classify(bashClassifyArgs(t, c)); got != AutoAllow {
 				t.Errorf("%q: got %v, want AutoAllow", c, got)
 			}
 		})
 	}
 }
 
-func TestBashPrompt(t *testing.T) {
-	pol := NewPolicy(t.TempDir())
+func TestBashClassify_Prompt(t *testing.T) {
 	cases := []struct {
 		name, cmd string
 	}{
@@ -197,21 +109,18 @@ func TestBashPrompt(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			args := bashArgs(t, c.cmd)
+			args := bashClassifyArgs(t, c.cmd)
 			if c.cmd == "" {
 				args = ""
 			}
-			if got := pol("bash", args); got != Prompt {
+			if got := Bash.Classify(args); got != Prompt {
 				t.Errorf("%q: got %v, want Prompt", c.cmd, got)
 			}
 		})
 	}
 }
 
-func TestBashQuotedSeparatorsAreSafe(t *testing.T) {
-	pol := NewPolicy(t.TempDir())
-	// A ';' or '>' inside a quoted string shouldn't trip the escape check,
-	// and the pipeline splitter shouldn't break on |/&& inside quotes.
+func TestBashClassify_QuotedSeparatorsAreSafe(t *testing.T) {
 	cases := []string{
 		`echo "a ; b"`,
 		`echo "a > b"`,
@@ -220,19 +129,10 @@ func TestBashQuotedSeparatorsAreSafe(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c, func(t *testing.T) {
-			if got := pol("bash", bashArgs(t, c)); got != AutoAllow {
+			if got := Bash.Classify(bashClassifyArgs(t, c)); got != AutoAllow {
 				t.Errorf("%q: got %v, want AutoAllow", c, got)
 			}
 		})
-	}
-}
-
-func TestNonDestructiveToolsPrompt(t *testing.T) {
-	// The agent only consults the policy for destructive tools, but if
-	// someone calls us with an unrecognised tool name we default to Prompt.
-	pol := NewPolicy(t.TempDir())
-	if got := pol("read", `{"path":"foo"}`); got != Prompt {
-		t.Errorf("read: got %v, want Prompt", got)
 	}
 }
 

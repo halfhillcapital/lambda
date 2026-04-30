@@ -38,8 +38,22 @@ type grepTool struct{}
 // Grep is the singleton instance of the grep tool.
 var Grep grepTool
 
-func (grepTool) Name() string        { return "grep" }
-func (grepTool) IsDestructive() bool { return false }
+func (grepTool) Name() string { return "grep" }
+
+// Classify always returns AutoAllow: grep doesn't mutate anything.
+func (grepTool) Classify(string) Verdict { return AutoAllow }
+
+// Summarize returns the pattern being searched (with optional path scope).
+func (grepTool) Summarize(rawArgs string) string {
+	if a, err := Grep.Decode(rawArgs); err == nil {
+		s := a.Pattern
+		if a.Path != "" {
+			s += " in " + a.Path
+		}
+		return Truncate(s, 120)
+	}
+	return Truncate(rawArgs, 120)
+}
 
 func (grepTool) Schema() openai.ChatCompletionToolParam {
 	return makeSchema(Grep.Name(),
