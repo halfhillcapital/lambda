@@ -106,6 +106,14 @@ func (m *uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	var tcmd, vcmd tea.Cmd
+	if mouseMsg, ok := msg.(tea.MouseMsg); ok {
+		switch mouseMsg.Type {
+		case tea.MouseWheelUp, tea.MouseWheelDown:
+			// Route wheel scrolling exclusively to the transcript viewport.
+			m.viewport, vcmd = m.viewport.Update(msg)
+			return m, vcmd
+		}
+	}
 	m.input, tcmd = m.input.Update(msg)
 	m.viewport, vcmd = m.viewport.Update(msg)
 	m.adjustInputHeight()
