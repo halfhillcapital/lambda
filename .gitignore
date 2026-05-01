@@ -17,3 +17,6 @@
 # Logs and temporary files
 *.log
 /tmp/
+
+# Lambda
+.lambda/
