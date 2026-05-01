@@ -50,7 +50,7 @@ func TestRun_CancelMidTurn_PreservesPairing(t *testing.T) {
 		return DecisionAllow
 	}
 
-	a := newAgentFull(t, srv, tools.New(""), confirmer)
+	a := newAgentFull(t, srv, tools.New("", nil), confirmer)
 	out := make(chan Event, 64)
 	a.Run(ctx, "go", out)
 	events := drainEvents(out)
@@ -296,7 +296,7 @@ func TestRun_DestructiveDenied_PreservesPairing(t *testing.T) {
 		}
 	})
 
-	a := newAgentFull(t, srv, tools.New(""), confirmer)
+	a := newAgentFull(t, srv, tools.New("", nil), confirmer)
 	out := make(chan Event, 32)
 	a.Run(context.Background(), "go", out)
 	events := drainEvents(out)

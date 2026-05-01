@@ -8,8 +8,10 @@ A minimal CLI coding agent for local LLMs via any OpenAI-compatible endpoint
   tool calls.
 - **One-shot mode** via `-p`, positional args, or piped stdin — stdout stays
   clean so it pipes cleanly into other tools.
-- **Six built-in tools**: `read`, `write`, `edit`, `grep`, `glob`, `bash`. Destructive ones (`write`, `edit`, `bash`)
+- **Seven built-in tools**: `read`, `write`, `edit`, `grep`, `glob`, `bash`, `skill`. Destructive ones (`write`, `edit`, `bash`)
   require per-call confirmation (or `--yolo`).
+- **Skills**: markdown instructions in `~/.claude/skills/` or `./.claude/skills/` are listed in the system prompt
+  and loaded on demand via the `skill` tool. See `docs/agents/skills.md`.
 - **REPL slash commands**: `/new` (or `/clear`) to start a fresh conversation,
   `/help` for the list. Anything starting with `/` is treated as a command.
 - **History compaction**: long REPL sessions stay under a soft prompt-token

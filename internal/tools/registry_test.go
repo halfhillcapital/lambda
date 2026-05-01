@@ -12,8 +12,9 @@ func TestNewSchemas(t *testing.T) {
 	want := map[string]bool{
 		Read.Name(): true, Write.Name(): true, Edit.Name(): true,
 		Grep.Name(): true, Glob.Name(): true, Bash.Name(): true,
+		"skill": true,
 	}
-	got := New("").Schemas()
+	got := New("", nil).Schemas()
 	if len(got) != len(want) {
 		t.Fatalf("Schemas() returned %d tools, want %d", len(got), len(want))
 	}
@@ -39,7 +40,7 @@ func TestReadOnlyToolsAutoAllow(t *testing.T) {
 
 // TestRegistryExecuteUnknownTool covers the dispatch-miss path.
 func TestRegistryExecuteUnknownTool(t *testing.T) {
-	got := New("").Execute(context.Background(), "no_such_tool", "{}")
+	got := New("", nil).Execute(context.Background(), "no_such_tool", "{}")
 	if !strings.HasPrefix(got, "schema error:") {
 		t.Errorf("unknown tool should be a schema error; got %q", got)
 	}

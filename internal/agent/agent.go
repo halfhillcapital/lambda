@@ -69,7 +69,7 @@ type Agent struct {
 }
 
 // New constructs an Agent. registry is the tool registry the agent
-// dispatches against (build with tools.New(sessionRoot) for production).
+// dispatches against (build with tools.New(sessionRoot, skillIdx) for production).
 // approver is the single owner of tool-call approval (build it with
 // NewApprover, passing the same registry). logger may be nil to disable
 // structured logging; pair with OpenDebugLog if --debug is on. The agent

@@ -213,7 +213,7 @@ func newAgent(t *testing.T, srv *scriptedServer, mutate ...func(*config.Config))
 		t.Fatalf("confirmer called unexpectedly: name=%s args=%s", name, args)
 		return DecisionDeny
 	}
-	return newAgentFull(t, srv, tools.New(""), confirmer, mutate...)
+	return newAgentFull(t, srv, tools.New("", nil), confirmer, mutate...)
 }
 
 // newAgentFull is newAgent with an explicit registry and confirmer; used by

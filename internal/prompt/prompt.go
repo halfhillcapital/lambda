@@ -6,6 +6,8 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+
+	"lambda/internal/skills"
 )
 
 const basePrompt = `You are lambda, a terse CLI coding assistant running in a terminal on the user's machine. You have tools to read and edit files and to run bash. Use them proactively to answer questions and complete tasks — don't ask permission, just act.
@@ -18,8 +20,10 @@ Guidelines:
 - Be terse. No preamble, no trailing summaries. The user sees your tool calls and their results.
 - When you're done with the task, stop calling tools and give a one-line answer.`
 
-// Build assembles the system prompt, embedding environment context (cwd, OS, git status).
-func Build(cwd string) string {
+// Build assembles the system prompt, embedding environment context (cwd, OS,
+// git status) and a listing of available skills. skillIdx may be nil or empty;
+// the skills block is omitted when no skills are loaded.
+func Build(cwd string, skillIdx *skills.Index) string {
 	var uname, gitStatus string
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -39,6 +43,31 @@ func Build(cwd string) string {
 		fmt.Fprintf(&b, "git:\n%s\n", indent(truncateLines(gitStatus, 40), "  "))
 	}
 	b.WriteString("</environment>")
+	if block := skillsBlock(skillIdx); block != "" {
+		b.WriteString("\n\n")
+		b.WriteString(block)
+	}
+	return b.String()
+}
+
+// skillsBlock renders the available-skills listing (name + description) for
+// inclusion in the system prompt. Returns "" when no skills are loaded so the
+// prompt stays clean for users without a skills directory.
+func skillsBlock(idx *skills.Index) string {
+	if idx == nil {
+		return ""
+	}
+	list := idx.List()
+	if len(list) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("<available-skills>\n")
+	b.WriteString("Each skill is a markdown instruction pack. Load one by calling the `skill` tool with its name. Skills are listed below as `name: description`.\n\n")
+	for _, s := range list {
+		fmt.Fprintf(&b, "- %s: %s\n", s.Name, s.Description)
+	}
+	b.WriteString("</available-skills>")
 	return b.String()
 }
 

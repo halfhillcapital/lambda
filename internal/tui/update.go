@@ -88,8 +88,7 @@ func (m *uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			if strings.HasPrefix(text, "/") {
-				m.handleSlashCommand(text)
-				return m, nil
+				return m, m.handleSlashCommand(text)
 			}
 			return m, m.startTurn(text)
 		case "alt+enter", "ctrl+j":
@@ -122,23 +121,65 @@ func (m *uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // handleSlashCommand processes a `/`-prefixed input as a REPL command.
-// Unknown commands surface an error block; recognised commands act and
-// append a notice. No model call is made.
-func (m *uiModel) handleSlashCommand(text string) {
+// Built-in commands win on name collision with skills. A `/<skill>` matching
+// a loaded skill starts a turn whose user message asks the model to run the
+// skill (the model loads the body via the `skill` tool). Unknown commands
+// surface an error block; no model call is made.
+//
+// Returns a tea.Cmd when the dispatch starts a model turn (skill invocation),
+// otherwise nil.
+func (m *uiModel) handleSlashCommand(text string) tea.Cmd {
 	m.input.Reset()
 	m.adjustInputHeight()
-	cmd := strings.Fields(text)[0]
+	fields := strings.Fields(text)
+	cmd := fields[0]
+	args := strings.TrimSpace(strings.TrimPrefix(text, cmd))
 	switch cmd {
 	case "/new", "/clear":
 		m.agent.Reset()
 		m.blocks = nil
 		m.blocks = append(m.blocks, block{kind: blockNotice, text: "started a new conversation", final: true})
+		m.refreshViewport()
+		return nil
 	case "/help":
 		m.blocks = append(m.blocks, block{kind: blockNotice, text: "commands: /new (or /clear) to reset · /help · Ctrl+C to cancel turn or quit · Alt+Enter (or Shift+Enter with /terminal-setup) for newline · PgUp/PgDn to scroll", final: true})
-	default:
-		m.blocks = append(m.blocks, block{kind: blockError, text: "unknown command: " + cmd + " (try /help)", final: true})
+		if list := m.skills.List(); len(list) > 0 {
+			var b strings.Builder
+			b.WriteString("skills (invoke with /<name> [args]):")
+			for _, s := range list {
+				b.WriteString("\n  /")
+				b.WriteString(s.Name)
+				b.WriteString(" — ")
+				b.WriteString(s.Description)
+			}
+			m.blocks = append(m.blocks, block{kind: blockNotice, text: b.String(), final: true})
+		}
+		m.refreshViewport()
+		return nil
 	}
+	if name := strings.TrimPrefix(cmd, "/"); name != "" {
+		if _, ok := m.skills.Get(name); ok {
+			return m.startTurn(skillInvocationMessage(name, args))
+		}
+	}
+	m.blocks = append(m.blocks, block{kind: blockError, text: "unknown command: " + cmd + " (try /help)", final: true})
 	m.refreshViewport()
+	return nil
+}
+
+// skillInvocationMessage formats a user-typed `/skill args` into the message
+// the model receives. The wrapping mirrors the convention Claude Code uses so
+// skills authored for that harness behave the same here.
+func skillInvocationMessage(name, args string) string {
+	var b strings.Builder
+	b.WriteString("<command-name>/")
+	b.WriteString(name)
+	b.WriteString("</command-name>\n<command-args>")
+	b.WriteString(args)
+	b.WriteString("</command-args>\n\nRun the ")
+	b.WriteString(name)
+	b.WriteString(" skill (load it with the skill tool) and follow its instructions, using the arguments above.")
+	return b.String()
 }
 
 // summarizeForQuit asks the worktree session for a change summary off the UI

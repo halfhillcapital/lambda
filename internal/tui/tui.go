@@ -15,6 +15,7 @@ import (
 
 	"lambda/internal/agent"
 	"lambda/internal/config"
+	"lambda/internal/skills"
 	"lambda/internal/tools"
 	"lambda/internal/worktree"
 )
@@ -25,6 +26,7 @@ type uiModel struct {
 	cfg      *config.Config
 	agent    *agent.Agent
 	registry tools.Registry
+	skills   *skills.Index
 	session  *worktree.Session
 	askCh    chan confirmRequest
 	eventCh  chan agent.Event
@@ -66,10 +68,14 @@ type quitModalState struct {
 	body   string
 }
 
-func newUIModel(cfg *config.Config, systemPrompt string, registry tools.Registry, session *worktree.Session) (*uiModel, error) {
+func newUIModel(cfg *config.Config, systemPrompt string, registry tools.Registry, skillIdx *skills.Index, session *worktree.Session) (*uiModel, error) {
+	if skillIdx == nil {
+		skillIdx = skills.Empty()
+	}
 	m := &uiModel{
 		cfg:      cfg,
 		registry: registry,
+		skills:   skillIdx,
 		session:  session,
 		askCh:    make(chan confirmRequest, 1),
 		eventCh:  make(chan agent.Event, 128),
@@ -276,8 +282,8 @@ func cropLines(s string, n int) string {
 // returns the user's keep/discard choice for the worktree session. The
 // returned action is ActionKeep when the user never reaches the quit
 // modal (e.g. clean session, or worktree disabled).
-func Run(ctx context.Context, cfg *config.Config, systemPrompt string, registry tools.Registry, session *worktree.Session) (worktree.Action, error) {
-	m, err := newUIModel(cfg, systemPrompt, registry, session)
+func Run(ctx context.Context, cfg *config.Config, systemPrompt string, registry tools.Registry, skillIdx *skills.Index, session *worktree.Session) (worktree.Action, error) {
+	m, err := newUIModel(cfg, systemPrompt, registry, skillIdx, session)
 	if err != nil {
 		return worktree.ActionKeep, err
 	}

@@ -1,7 +1,8 @@
 // Package tools implements the built-in tools the agent dispatches against:
-// read, write, edit, grep, glob, and bash. Each tool lives in its own file
-// and exposes a singleton; New(sessionRoot) builds the registry shipped with
-// lambda, binding session-aware tools (write, edit) to the given root.
+// read, write, edit, grep, glob, bash, and skill. Each tool lives in its own
+// file and exposes a singleton; New(sessionRoot, skillsIndex) builds the
+// registry shipped with lambda, binding session-aware tools (write, edit) to
+// the given root and the skill tool to the given skill index.
 package tools
 
 import (
@@ -12,6 +13,8 @@ import (
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/shared"
+
+	"lambda/internal/skills"
 )
 
 // Tool is the uniform shape the agent dispatches against. Each tool answers
@@ -38,9 +41,10 @@ type Registry map[string]Tool
 // New assembles the agent's built-in registry. sessionRoot is the agent's
 // working directory (typically the worktree path) used by write/edit to
 // classify whether a destination is "inside the session" — pass "" if no
-// session root applies (writes will always Prompt).
-func New(sessionRoot string) Registry {
-	return mustBuild(Read, Grep, Glob, Bash, NewWrite(sessionRoot), NewEdit(sessionRoot))
+// session root applies (writes will always Prompt). skillIdx is the loaded
+// skill index; pass skills.Empty() (or nil) when no skills are configured.
+func New(sessionRoot string, skillIdx *skills.Index) Registry {
+	return mustBuild(Read, Grep, Glob, Bash, NewWrite(sessionRoot), NewEdit(sessionRoot), NewSkill(skillIdx))
 }
 
 // mustBuild assembles a Registry, panicking on duplicate names.

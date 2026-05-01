@@ -16,6 +16,7 @@ import (
 
 	"lambda/internal/config"
 	"lambda/internal/prompt"
+	"lambda/internal/skills"
 	"lambda/internal/tools"
 	"lambda/internal/tui"
 	"lambda/internal/worktree"
@@ -58,8 +59,9 @@ func run() int {
 		fmt.Fprintf(os.Stderr, "lambda: session worktree %s (branch %s)\n", session.Path, session.Branch)
 	}
 
-	systemPrompt := prompt.Build(session.Cwd())
-	registry := tools.New(session.Cwd())
+	skillIdx := skills.Load(skills.RootsFromEnv(session.Cwd(), os.Getenv("LAMBDA_SKILLS_DIR")), os.Stderr)
+	systemPrompt := prompt.Build(session.Cwd(), skillIdx)
+	registry := tools.New(session.Cwd(), skillIdx)
 
 	if p, ok := resolveOneShotPrompt(cfg); ok {
 		return runOneShot(ctx, cfg, systemPrompt, registry, p)
@@ -70,7 +72,7 @@ func run() int {
 		return 2
 	}
 
-	action, err := tui.Run(ctx, cfg, systemPrompt, registry, session)
+	action, err := tui.Run(ctx, cfg, systemPrompt, registry, skillIdx, session)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
