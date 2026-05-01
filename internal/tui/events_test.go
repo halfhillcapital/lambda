@@ -11,7 +11,8 @@ import (
 
 func TestHandleEvent_ContextUsageUpdatesModelState(t *testing.T) {
 	m := &uiModel{
-		viewport: viewport.New(80, 20),
+		viewport:   viewport.New(80, 20),
+		transcript: newTranscript(nil),
 	}
 
 	m.handleEvent(agent.EventContextUsage{Used: 1234, Limit: 4096})
@@ -43,4 +44,3 @@ func TestRenderTokenUsage_NoCap(t *testing.T) {
 		t.Fatalf("renderTokenUsage()=%q, want label %q", got, "999 tok")
 	}
 }
-

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/shared"
@@ -77,6 +78,30 @@ func (writeTool) Summarize(rawArgs string) string {
 		return fmt.Sprintf("%s (%d bytes)", a.Path, len(a.Content))
 	}
 	return Truncate(rawArgs, 120)
+}
+
+// Preview returns the destination plus the first chunk of the file content.
+func (writeTool) Preview(rawArgs string) []PreviewLine {
+	a, err := Write.Decode(rawArgs)
+	if err != nil {
+		return nil
+	}
+	contentLines := strings.Split(a.Content, "\n")
+	shown := contentLines
+	if len(shown) > 20 {
+		shown = shown[:20]
+	}
+	lines := []PreviewLine{{
+		Kind: PreviewText,
+		Text: fmt.Sprintf("%s — %d bytes, %d lines", a.Path, len(a.Content), len(contentLines)),
+	}}
+	for _, line := range shown {
+		lines = append(lines, PreviewLine{Kind: PreviewText, Text: line})
+	}
+	if len(contentLines) > 20 {
+		lines = append(lines, PreviewLine{Kind: PreviewText, Text: fmt.Sprintf("… (%d more lines)", len(contentLines)-20)})
+	}
+	return lines
 }
 
 func (writeTool) Execute(_ context.Context, rawArgs string) string {

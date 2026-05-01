@@ -10,7 +10,6 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 
 	"lambda/internal/agent"
@@ -23,33 +22,24 @@ import (
 // --- model ---
 
 type uiModel struct {
-	cfg      *config.Config
-	agent    *agent.Agent
-	registry tools.Registry
-	skills   *skills.Index
-	session  *worktree.Session
-	askCh    chan confirmRequest
-	eventCh  chan agent.Event
+	cfg     *config.Config
+	agent   *agent.Agent
+	session *worktree.Session
+	askCh   chan confirmRequest
 
-	turnCtx    context.Context
-	turnCancel context.CancelFunc
-	turnActive bool
-	stepsUsed  int
-	tokenUsed  int
-	tokenCap   int
-	// turn is incremented on every startTurn so stale messages from a
-	// previous turn's event channel can be filtered out.
-	turn int
+	commands  slashCommandDispatcher
+	turn      *turnRunner
+	stepsUsed int
+	tokenUsed int
+	tokenCap  int
 
-	viewport viewport.Model
-	input    textarea.Model
-	spinner  spinner.Model
-	renderer *glamour.TermRenderer
+	viewport   viewport.Model
+	input      textarea.Model
+	spinner    spinner.Model
+	transcript *transcript
 
-	blocks []block
-
-	pendingAsk *confirmRequest
-	quitModal  quitModalState
+	approval *approvalDialog
+	quit     *quitDialog
 	// chosenAction is read by the caller after Run returns to decide
 	// whether to keep or discard the session worktree. Defaults to
 	// ActionKeep (zero value) when the user never opens the modal.
@@ -63,30 +53,31 @@ type uiModel struct {
 	inputRows int
 }
 
-type quitModalState struct {
-	active bool
-	body   string
-}
-
 func newUIModel(cfg *config.Config, systemPrompt string, registry tools.Registry, skillIdx *skills.Index, session *worktree.Session) (*uiModel, error) {
 	if skillIdx == nil {
 		skillIdx = skills.Empty()
 	}
 	m := &uiModel{
 		cfg:      cfg,
-		registry: registry,
-		skills:   skillIdx,
 		session:  session,
 		askCh:    make(chan confirmRequest, 1),
-		eventCh:  make(chan agent.Event, 128),
+		commands: newSlashCommandDispatcher(skillIdx),
 	}
+	m.transcript = newTranscript(func(name, rawArgs string) string {
+		return registry.Summarize(name, rawArgs)
+	})
+	m.approval = newApprovalDialog(func(name, args string) []tools.PreviewLine {
+		return registry.Preview(name, args)
+	})
+	m.quit = &quitDialog{}
 	logger, logErr := agent.OpenDebugLog(cfg)
 	approver := agent.NewApprover(registry, m.confirmer, cfg.Yolo)
 	m.agent = agent.New(cfg, systemPrompt, registry, approver, logger)
+	m.turn = newTurnRunner(m.agent.Run)
 	m.tokenUsed, m.tokenCap = m.agent.ContextUsage()
 	if logErr != nil {
 		// Stderr is hidden by the alt-screen, so surface this in the UI.
-		m.blocks = append(m.blocks, block{kind: blockNotice, text: "log file disabled: " + logErr.Error(), final: true})
+		m.transcript.AppendNotice("log file disabled: " + logErr.Error())
 	}
 
 	ta := textarea.New()
@@ -122,18 +113,12 @@ func newUIModel(cfg *config.Config, systemPrompt string, registry tools.Registry
 }
 
 func (m *uiModel) rebuildRenderer(width int) error {
-	if width < 20 {
-		width = 20
-	}
-	r, err := glamour.NewTermRenderer(
-		glamour.WithAutoStyle(),
-		glamour.WithWordWrap(width-4),
-	)
-	if err != nil {
-		return err
-	}
-	m.renderer = r
-	return nil
+	return m.transcript.RebuildRenderer(width)
+}
+
+func (m *uiModel) refreshViewport() {
+	m.viewport.SetContent(m.transcript.Render())
+	m.viewport.GotoBottom()
 }
 
 func (m *uiModel) Init() tea.Cmd {
@@ -141,7 +126,6 @@ func (m *uiModel) Init() tea.Cmd {
 		textarea.Blink,
 		m.spinner.Tick,
 		m.waitForAsk(),
-		waitForEvent(m.eventCh, m.turn),
 	)
 }
 
@@ -150,13 +134,13 @@ func (m *uiModel) View() string {
 		return "initializing…"
 	}
 
-	if m.pendingAsk != nil {
-		modal := renderModal(m.pendingAsk, m.width)
+	if m.approval.Active() {
+		modal := m.approval.Render(m.width)
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, modal)
 	}
 
-	if m.quitModal.active {
-		modal := renderQuitModal(m.quitModal.body, m.width)
+	if m.quit.Active() {
+		modal := m.quit.Render(m.width)
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, modal)
 	}
 
@@ -174,7 +158,7 @@ func (m *uiModel) footer() string {
 	tokens := m.renderTokenUsage()
 	sep := statusStyle.Render(" · ")
 	var statusR string
-	if m.turnActive {
+	if m.turn.Active() {
 		statusR = m.spinner.View() + statusStyle.Render(fmt.Sprintf(" step %d/%d", m.stepsUsed, m.cfg.MaxSteps)) + sep + tokens + sep + statusStyle.Render("Ctrl+C cancel")
 	} else {
 		statusR = tokens + sep + statusStyle.Render("ready")

@@ -51,6 +51,15 @@ func (bashTool) Summarize(rawArgs string) string {
 	return Truncate(rawArgs, 120)
 }
 
+// Preview returns the exact command line that would be executed.
+func (bashTool) Preview(rawArgs string) []PreviewLine {
+	a, err := Bash.Decode(rawArgs)
+	if err != nil {
+		return nil
+	}
+	return []PreviewLine{{Kind: PreviewCommand, Text: "$ " + a.Command}}
+}
+
 func (bashTool) Schema() openai.ChatCompletionToolParam {
 	return makeSchema(Bash.Name(),
 		"Run a bash command non-interactively (empty stdin) and return its combined stdout+stderr. Bash is required on PATH (git bash on Windows). Default timeout 120s.",

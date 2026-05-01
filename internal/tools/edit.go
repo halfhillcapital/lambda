@@ -74,6 +74,22 @@ func (editTool) Summarize(rawArgs string) string {
 	return Truncate(rawArgs, 120)
 }
 
+// Preview returns a simple line-oriented diff of the requested replacement.
+func (editTool) Preview(rawArgs string) []PreviewLine {
+	a, err := Edit.Decode(rawArgs)
+	if err != nil {
+		return nil
+	}
+	lines := []PreviewLine{{Kind: PreviewText, Text: a.Path + ":"}}
+	for _, line := range strings.Split(a.OldString, "\n") {
+		lines = append(lines, PreviewLine{Kind: PreviewRemoved, Text: "- " + line})
+	}
+	for _, line := range strings.Split(a.NewString, "\n") {
+		lines = append(lines, PreviewLine{Kind: PreviewAdded, Text: "+ " + line})
+	}
+	return lines
+}
+
 func (editTool) Execute(_ context.Context, rawArgs string) string {
 	a, err := Edit.Decode(rawArgs)
 	if err != nil {
