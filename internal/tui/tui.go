@@ -33,6 +33,8 @@ type uiModel struct {
 	turnCancel context.CancelFunc
 	turnActive bool
 	stepsUsed  int
+	tokenUsed  int
+	tokenCap   int
 	// turn is incremented on every startTurn so stale messages from a
 	// previous turn's event channel can be filtered out.
 	turn int
@@ -75,6 +77,7 @@ func newUIModel(cfg *config.Config, systemPrompt string, registry tools.Registry
 	logger, logErr := agent.OpenDebugLog(cfg)
 	approver := agent.NewApprover(registry, m.confirmer, cfg.Yolo)
 	m.agent = agent.New(cfg, systemPrompt, registry, approver, logger)
+	m.tokenUsed, m.tokenCap = m.agent.ContextUsage()
 	if logErr != nil {
 		// Stderr is hidden by the alt-screen, so surface this in the UI.
 		m.blocks = append(m.blocks, block{kind: blockNotice, text: "log file disabled: " + logErr.Error(), final: true})
@@ -182,7 +185,7 @@ func (m *uiModel) footer() string {
 // the cap is disabled). Yellow at 80%+, red at 95%+ so the user sees the
 // context budget getting tight before compaction starts silently trimming.
 func (m *uiModel) renderTokenUsage() string {
-	used, capacity := m.agent.ContextUsage()
+	used, capacity := m.tokenUsed, m.tokenCap
 	if capacity <= 0 {
 		return statusStyle.Render(formatTokenCount(used) + " tok")
 	}

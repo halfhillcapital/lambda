@@ -39,6 +39,7 @@ type (
 	EventToolStart     struct{ ID, Name, Args string }
 	EventToolResult    struct{ ID, Name, Result string }
 	EventToolDenied    struct{ ID, Name string }
+	EventContextUsage  struct{ Used, Limit int }
 	EventTurnDone      struct{ Reason string }
 	EventError         struct{ Err error }
 )
@@ -49,6 +50,7 @@ func (EventAssistantDone) isEvent() {}
 func (EventToolStart) isEvent()     {}
 func (EventToolResult) isEvent()    {}
 func (EventToolDenied) isEvent()    {}
+func (EventContextUsage) isEvent()  {}
 func (EventTurnDone) isEvent()      {}
 func (EventError) isEvent()         {}
 
@@ -123,6 +125,7 @@ func (a *Agent) Reset() {
 func (a *Agent) Run(ctx context.Context, userInput string, out chan<- Event) {
 	defer close(out)
 	a.history.messages = append(a.history.messages, openai.UserMessage(userInput))
+	a.emitContextUsage(ctx, out)
 	a.logger.Write("turn_start", map[string]any{"input_chars": len(userInput)})
 
 	for step := 0; step < a.maxSteps; step++ {
@@ -136,6 +139,7 @@ func (a *Agent) Run(ctx context.Context, userInput string, out chan<- Event) {
 			return
 		}
 		a.history.messages = append(a.history.messages, openai.ChatCompletionMessageParamUnion{OfAssistant: assistant})
+		a.emitContextUsage(ctx, out)
 
 		if len(assistant.ToolCalls) == 0 {
 			a.emit(ctx, out, EventTurnDone{Reason: "done"})
@@ -148,6 +152,7 @@ func (a *Agent) Run(ctx context.Context, userInput string, out chan<- Event) {
 				for _, rem := range assistant.ToolCalls[i+1:] {
 					a.history.messages = append(a.history.messages, openai.ToolMessage("cancelled by user", rem.ID))
 				}
+				a.emitContextUsage(ctx, out)
 				return
 			}
 		}
@@ -159,7 +164,7 @@ func (a *Agent) Run(ctx context.Context, userInput string, out chan<- Event) {
 // assistant message to append to the history. The completer's content/reasoning
 // callbacks are wired straight into the agent's event channel.
 func (a *Agent) completeOne(ctx context.Context, out chan<- Event) (*openai.ChatCompletionAssistantMessageParam, error) {
-	a.compactIfNeeded()
+	a.compactIfNeeded(ctx, out)
 	// Snapshot the char count of the exact message set we're sending; pairs
 	// with prompt_tokens in the response to calibrate charsPerToken.
 	charsSent := a.history.totalChars()
@@ -192,6 +197,7 @@ func (a *Agent) completeOne(ctx context.Context, out chan<- Event) (*openai.Chat
 	}
 
 	a.history.recordTokenUsage(charsSent, res.PromptTokens)
+	a.emitContextUsage(ctx, out)
 	a.logResponse(res.FinishReason, res.Msg.Content, res.Reasoning, len(res.Msg.ToolCalls), res.PromptTokens, res.CompletionTokens)
 	if res.Msg.Content != "" {
 		a.emit(ctx, out, EventAssistantDone{Text: res.Msg.Content})
@@ -228,6 +234,7 @@ func (a *Agent) handleToolCall(ctx context.Context, tc openai.ChatCompletionMess
 	if !a.approver.Allow(ctx, name, args) {
 		a.emit(ctx, out, EventToolDenied{ID: tc.ID, Name: name})
 		a.history.messages = append(a.history.messages, openai.ToolMessage("denied this tool call", tc.ID))
+		a.emitContextUsage(ctx, out)
 		return ctx.Err() == nil
 	}
 
@@ -235,14 +242,16 @@ func (a *Agent) handleToolCall(ctx context.Context, tc openai.ChatCompletionMess
 	result := a.registry.Execute(ctx, name, args)
 	a.emit(ctx, out, EventToolResult{ID: tc.ID, Name: name, Result: result})
 	a.history.messages = append(a.history.messages, openai.ToolMessage(result, tc.ID))
+	a.emitContextUsage(ctx, out)
 
 	return ctx.Err() == nil
 }
 
 // compactIfNeeded delegates the compaction work to history and writes a log
 // record summarising the result when the logger is enabled.
-func (a *Agent) compactIfNeeded() {
+func (a *Agent) compactIfNeeded(ctx context.Context, out chan<- Event) {
 	stats := a.history.compactIfNeeded()
+	a.emitContextUsage(ctx, out)
 	if a.logger == nil || !stats.changed() {
 		return
 	}
@@ -255,6 +264,11 @@ func (a *Agent) compactIfNeeded() {
 		"msgs_before":      stats.msgsBefore,
 		"msgs_after":       stats.msgsAfter,
 	})
+}
+
+func (a *Agent) emitContextUsage(ctx context.Context, out chan<- Event) {
+	used, limit := a.ContextUsage()
+	a.emit(ctx, out, EventContextUsage{Used: used, Limit: limit})
 }
 
 // assistantFromMessage converts a response ChatCompletionMessage into the

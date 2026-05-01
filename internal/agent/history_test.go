@@ -200,7 +200,7 @@ func TestCompactLogsCompactionEvent(t *testing.T) {
 		logger:  &Logger{w: &buf},
 	}
 
-	a.compactIfNeeded()
+	a.compactIfNeeded(context.Background(), make(chan Event, 1))
 
 	if a.history.droppedTurns == 0 {
 		t.Fatal("expected drops")
@@ -229,7 +229,7 @@ func TestCompactLogsCompactionEvent(t *testing.T) {
 	}
 }
 
-func TestCompactNoEventWhenNoOp(t *testing.T) {
+func TestCompactNoCompactionEventWhenNoOp(t *testing.T) {
 	var buf bytes.Buffer
 	a := &Agent{
 		history: &history{
@@ -241,9 +241,18 @@ func TestCompactNoEventWhenNoOp(t *testing.T) {
 		},
 		logger: &Logger{w: &buf},
 	}
-	a.compactIfNeeded()
-	if buf.Len() > 0 {
-		t.Errorf("no log expected when nothing was compacted; got %q", buf.String())
+	a.compactIfNeeded(context.Background(), make(chan Event, 1))
+	for line := range strings.SplitSeq(strings.TrimRight(buf.String(), "\n"), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var rec map[string]any
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("bad JSONL line %q: %v", line, err)
+		}
+		if rec["kind"] == "compaction" {
+			t.Errorf("unexpected compaction record on no-op; log=%q", buf.String())
+		}
 	}
 }
 

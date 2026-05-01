@@ -113,6 +113,8 @@ func eventFields(e Event) (string, map[string]any) {
 		return "tool_result", map[string]any{"id": x.ID, "name": x.Name, "result": truncBody(x.Result), "chars": len(x.Result)}
 	case EventToolDenied:
 		return "tool_denied", map[string]any{"id": x.ID, "name": x.Name}
+	case EventContextUsage:
+		return "context_usage", map[string]any{"used": x.Used, "limit": x.Limit}
 	case EventTurnDone:
 		return "turn_done", map[string]any{"reason": x.Reason}
 	case EventError:

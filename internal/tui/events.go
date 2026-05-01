@@ -101,6 +101,8 @@ func (m *uiModel) handleEvent(ev agent.Event) {
 		}
 	case agent.EventToolDenied:
 		m.blocks = append(m.blocks, block{kind: blockNotice, text: fmt.Sprintf("denied %s", e.Name), final: true})
+	case agent.EventContextUsage:
+		m.tokenUsed, m.tokenCap = e.Used, e.Limit
 	case agent.EventTurnDone:
 		m.finalizeOpenThinking()
 		m.turnActive = false

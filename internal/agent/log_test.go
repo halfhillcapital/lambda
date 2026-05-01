@@ -61,6 +61,7 @@ func TestEventFields_CoversAllEvents(t *testing.T) {
 		{EventToolStart{ID: "1", Name: "ls", Args: "{}"}, "tool_start"},
 		{EventToolResult{ID: "1", Name: "ls", Result: "abc"}, "tool_result"},
 		{EventToolDenied{ID: "1", Name: "rm"}, "tool_denied"},
+		{EventContextUsage{Used: 1234, Limit: 4096}, "context_usage"},
 		{EventTurnDone{Reason: "done"}, "turn_done"},
 		{EventError{Err: errors.New("boom")}, "error"},
 	}

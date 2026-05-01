@@ -121,12 +121,22 @@ func TestRun_RetryExhaustion_EmitsEventError(t *testing.T) {
 		t.Errorf("server calls = %d, want %d (one initial + %d retries)", got, wantCalls, len(retryBackoffs))
 	}
 
-	if len(events) != 1 {
-		t.Fatalf("got %d events, want exactly 1 (EventError): %+v", len(events), events)
+	var errEv EventError
+	errCount := 0
+	for _, ev := range events {
+		if e, ok := ev.(EventError); ok {
+			errEv = e
+			errCount++
+		}
 	}
-	errEv, ok := events[0].(EventError)
-	if !ok {
-		t.Fatalf("event is %T, want EventError", events[0])
+	if errCount != 1 {
+		t.Fatalf("got %d EventError entries, want exactly 1; events=%+v", errCount, events)
+	}
+	if len(events) < 1 {
+		t.Fatalf("got no events, want EventError")
+	}
+	if _, ok := events[len(events)-1].(EventError); !ok {
+		t.Fatalf("last event is %T, want EventError", events[len(events)-1])
 	}
 	msg := errEv.Err.Error()
 	if !strings.Contains(msg, "api error (500)") {
