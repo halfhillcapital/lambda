@@ -7,9 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/openai/openai-go"
-	"github.com/openai/openai-go/shared"
-
+	"lambda/internal/ai"
 	"lambda/internal/skills"
 )
 
@@ -45,13 +43,13 @@ func (s skillTool) Summarize(rawArgs string) string {
 	return a.Name
 }
 
-func (s skillTool) Schema() openai.ChatCompletionToolParam {
+func (s skillTool) Schema() ai.ToolSpec {
 	desc := "Load the body of a named skill (markdown instructions). Use this when the user references a skill by name or when the available-skills listing in the system prompt indicates a skill matches the task."
 	if names := s.idx.Names(); len(names) > 0 {
 		desc += " Available skills: " + strings.Join(names, ", ") + "."
 	}
 	return makeSchema(s.Name(), desc,
-		shared.FunctionParameters{
+		map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"name": strProp("Exact name of the skill to load (case-sensitive)."),

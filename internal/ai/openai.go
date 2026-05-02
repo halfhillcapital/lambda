@@ -1,4 +1,4 @@
-package agent
+package ai
 
 import (
 	"context"
@@ -17,6 +17,7 @@ import (
 	"github.com/openai/openai-go/option"
 	"github.com/openai/openai-go/packages/param"
 	"github.com/openai/openai-go/packages/respjson"
+	"github.com/openai/openai-go/shared"
 )
 
 // openAICompleter is the production Completer: it talks HTTP to any
@@ -46,17 +47,18 @@ func NewOpenAICompleter(baseURL, apiKey string, stream bool) Completer {
 	return &openAICompleter{client: client, stream: stream}
 }
 
-// errNoChoices is returned by Complete when the response has zero choices.
+// ErrNoChoices is returned by Complete when the response has zero choices.
 // Distinguishable from SDK errors so it bypasses humanizeError (which would
 // wrap it as a transport failure).
-var errNoChoices = errors.New("model returned no choices")
+var ErrNoChoices = errors.New("model returned no choices")
 
 func (c *openAICompleter) Complete(
 	ctx context.Context,
-	params openai.ChatCompletionNewParams,
+	req CompletionRequest,
 	onContent func(string),
 	onReasoning func(string),
-) (Result, error) {
+) (CompletionResult, error) {
+	params := openAIParams(req)
 	if c.stream {
 		params.StreamOptions = openai.ChatCompletionStreamOptionsParam{
 			IncludeUsage: param.NewOpt(true),
@@ -70,23 +72,23 @@ func (c *openAICompleter) completeNonStreaming(
 	ctx context.Context,
 	params openai.ChatCompletionNewParams,
 	onReasoning func(string),
-) (Result, error) {
+) (CompletionResult, error) {
 	comp, err := withTransientRetry(ctx, func() (*openai.ChatCompletion, error) {
 		return c.client.Chat.Completions.New(ctx, params)
 	})
 	if err != nil {
-		return Result{}, humanizeError(err)
+		return CompletionResult{}, humanizeError(err)
 	}
 	if len(comp.Choices) == 0 {
-		return Result{}, errNoChoices
+		return CompletionResult{}, ErrNoChoices
 	}
 	msg := comp.Choices[0].Message
 	reasoning := extractReasoning(msg.JSON.ExtraFields)
 	if reasoning != "" && onReasoning != nil {
 		onReasoning(reasoning)
 	}
-	return Result{
-		Msg:              msg,
+	return CompletionResult{
+		Message:          messageFromOpenAI(msg),
 		Reasoning:        reasoning,
 		FinishReason:     comp.Choices[0].FinishReason,
 		PromptTokens:     comp.Usage.PromptTokens,
@@ -98,7 +100,7 @@ func (c *openAICompleter) completeStreaming(
 	ctx context.Context,
 	params openai.ChatCompletionNewParams,
 	onContent, onReasoning func(string),
-) (Result, error) {
+) (CompletionResult, error) {
 	var (
 		acc       openai.ChatCompletionAccumulator
 		reasoning strings.Builder
@@ -122,18 +124,92 @@ func (c *openAICompleter) completeStreaming(
 		}
 	}
 	if err := stream.Err(); err != nil {
-		return Result{}, humanizeError(err)
+		return CompletionResult{}, humanizeError(err)
 	}
 	if len(acc.Choices) == 0 {
-		return Result{}, errNoChoices
+		return CompletionResult{}, ErrNoChoices
 	}
-	return Result{
-		Msg:              acc.Choices[0].Message,
+	return CompletionResult{
+		Message:          messageFromOpenAI(acc.Choices[0].Message),
 		Reasoning:        reasoning.String(),
 		FinishReason:     acc.Choices[0].FinishReason,
 		PromptTokens:     acc.Usage.PromptTokens,
 		CompletionTokens: acc.Usage.CompletionTokens,
 	}, nil
+}
+
+func openAIParams(req CompletionRequest) openai.ChatCompletionNewParams {
+	return openai.ChatCompletionNewParams{
+		Model:    shared.ChatModel(req.Model),
+		Messages: openAIMessages(req.Messages),
+		Tools:    openAITools(req.Tools),
+	}
+}
+
+func openAIMessages(messages []Message) []openai.ChatCompletionMessageParamUnion {
+	out := make([]openai.ChatCompletionMessageParamUnion, 0, len(messages))
+	for _, m := range messages {
+		switch m.Role {
+		case RoleSystem:
+			out = append(out, openai.SystemMessage(m.Content))
+		case RoleUser:
+			out = append(out, openai.UserMessage(m.Content))
+		case RoleAssistant:
+			out = append(out, openai.ChatCompletionMessageParamUnion{OfAssistant: openAIAssistantMessage(m)})
+		case RoleTool:
+			out = append(out, openai.ToolMessage(m.Content, m.ToolCallID))
+		}
+	}
+	return out
+}
+
+func openAIAssistantMessage(m Message) *openai.ChatCompletionAssistantMessageParam {
+	p := &openai.ChatCompletionAssistantMessageParam{}
+	if m.Content != "" {
+		p.Content.OfString = param.NewOpt(m.Content)
+	}
+	if len(m.ToolCalls) > 0 {
+		p.ToolCalls = make([]openai.ChatCompletionMessageToolCallParam, len(m.ToolCalls))
+		for i, tc := range m.ToolCalls {
+			p.ToolCalls[i] = openai.ChatCompletionMessageToolCallParam{
+				ID: tc.ID,
+				Function: openai.ChatCompletionMessageToolCallFunctionParam{
+					Name:      tc.Name,
+					Arguments: tc.Arguments,
+				},
+			}
+		}
+	}
+	return p
+}
+
+func openAITools(tools []ToolSpec) []openai.ChatCompletionToolParam {
+	out := make([]openai.ChatCompletionToolParam, 0, len(tools))
+	for _, t := range tools {
+		out = append(out, openai.ChatCompletionToolParam{
+			Function: shared.FunctionDefinitionParam{
+				Name:        t.Name,
+				Description: openai.String(t.Description),
+				Parameters:  t.Parameters,
+			},
+		})
+	}
+	return out
+}
+
+func messageFromOpenAI(msg openai.ChatCompletionMessage) Message {
+	m := Message{Role: RoleAssistant, Content: msg.Content}
+	if len(msg.ToolCalls) > 0 {
+		m.ToolCalls = make([]ToolCall, len(msg.ToolCalls))
+		for i, tc := range msg.ToolCalls {
+			m.ToolCalls[i] = ToolCall{
+				ID:        tc.ID,
+				Name:      tc.Function.Name,
+				Arguments: tc.Function.Arguments,
+			}
+		}
+	}
+	return m
 }
 
 // newHTTPClient returns an http.Client with bounded connect and response-header

@@ -9,7 +9,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 
 	"lambda/internal/config"
 	"lambda/internal/tools"
@@ -61,7 +60,7 @@ func TestRun_CancelMidTurn_PreservesPairing(t *testing.T) {
 
 	asstIdx := -1
 	for i, m := range a.history.messages {
-		if m.OfAssistant != nil && len(m.OfAssistant.ToolCalls) > 0 {
+		if roleOf(m) == "assistant" && len(m.ToolCalls) > 0 {
 			asstIdx = i
 			break
 		}
@@ -69,7 +68,7 @@ func TestRun_CancelMidTurn_PreservesPairing(t *testing.T) {
 	if asstIdx < 0 {
 		t.Fatal("no assistant message with tool_calls in history")
 	}
-	asst := a.history.messages[asstIdx].OfAssistant
+	asst := a.history.messages[asstIdx]
 	asstIDs := map[string]bool{}
 	for _, tc := range asst.ToolCalls {
 		asstIDs[tc.ID] = true
@@ -78,11 +77,11 @@ func TestRun_CancelMidTurn_PreservesPairing(t *testing.T) {
 	toolIDs := map[string]bool{}
 	placeholders := 0
 	for _, m := range a.history.messages[asstIdx+1:] {
-		if m.OfTool == nil {
+		if roleOf(m) != "tool" {
 			continue
 		}
-		toolIDs[m.OfTool.ToolCallID] = true
-		if m.OfTool.Content.OfString.Value == "cancelled by user" {
+		toolIDs[m.ToolCallID] = true
+		if m.Content == "cancelled by user" {
 			placeholders++
 		}
 	}
@@ -105,8 +104,6 @@ func TestRun_CancelMidTurn_PreservesPairing(t *testing.T) {
 // upstream produces exactly one EventError after exhausting retries, that the
 // error message is humanized, and that no assistant message is committed.
 func TestRun_RetryExhaustion_EmitsEventError(t *testing.T) {
-	withFastBackoffs(t, 1*time.Millisecond, 1*time.Millisecond)
-
 	srv := newScriptedServer(t, func(call int, _ recordedRequest) (int, any) {
 		return 500, cannedError("upstream boom")
 	})
@@ -116,9 +113,9 @@ func TestRun_RetryExhaustion_EmitsEventError(t *testing.T) {
 	a.Run(context.Background(), "go", out)
 	events := drainEvents(out)
 
-	wantCalls := len(retryBackoffs) + 1
+	wantCalls := 3
 	if got := srv.calls(); got != wantCalls {
-		t.Errorf("server calls = %d, want %d (one initial + %d retries)", got, wantCalls, len(retryBackoffs))
+		t.Errorf("server calls = %d, want %d (one initial + two retries)", got, wantCalls)
 	}
 
 	var errEv EventError
@@ -326,11 +323,11 @@ func TestRun_DestructiveDenied_PreservesPairing(t *testing.T) {
 
 	var foundDenialMsg bool
 	for _, m := range a.history.messages {
-		if m.OfTool == nil {
+		if roleOf(m) != "tool" {
 			continue
 		}
-		if m.OfTool.ToolCallID == "call_bash" {
-			if got := m.OfTool.Content.OfString.Value; got != "denied this tool call" {
+		if m.ToolCallID == "call_bash" {
+			if got := m.Content; got != "denied this tool call" {
 				t.Errorf("denial tool message content = %q, want %q", got, "denied this tool call")
 			}
 			foundDenialMsg = true

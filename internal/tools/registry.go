@@ -11,9 +11,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/openai/openai-go"
-	"github.com/openai/openai-go/shared"
-
+	"lambda/internal/ai"
 	"lambda/internal/skills"
 )
 
@@ -28,7 +26,7 @@ import (
 // on this interface because each tool's argument struct is a different type.
 type Tool interface {
 	Name() string
-	Schema() openai.ChatCompletionToolParam
+	Schema() ai.ToolSpec
 	Summarize(rawArgs string) string
 	Classify(rawArgs string) Verdict
 	Execute(ctx context.Context, rawArgs string) string
@@ -61,8 +59,8 @@ func mustBuild(tools ...Tool) Registry {
 
 // Schemas returns one schema per tool. Order is unspecified; the model only
 // cares about the set, not the sequence.
-func (r Registry) Schemas() []openai.ChatCompletionToolParam {
-	out := make([]openai.ChatCompletionToolParam, 0, len(r))
+func (r Registry) Schemas() []ai.ToolSpec {
+	out := make([]ai.ToolSpec, 0, len(r))
 	for _, t := range r {
 		out = append(out, t.Schema())
 	}
@@ -127,13 +125,11 @@ func Truncate(s string, n int) string {
 
 // --- schema construction helpers ---
 
-func makeSchema(name, desc string, params shared.FunctionParameters) openai.ChatCompletionToolParam {
-	return openai.ChatCompletionToolParam{
-		Function: shared.FunctionDefinitionParam{
-			Name:        name,
-			Description: openai.String(desc),
-			Parameters:  params,
-		},
+func makeSchema(name, desc string, params map[string]any) ai.ToolSpec {
+	return ai.ToolSpec{
+		Name:        name,
+		Description: desc,
+		Parameters:  params,
 	}
 }
 

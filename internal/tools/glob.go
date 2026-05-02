@@ -8,8 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/openai/openai-go"
-	"github.com/openai/openai-go/shared"
+	"lambda/internal/ai"
 )
 
 const (
@@ -46,10 +45,10 @@ func (globTool) Summarize(rawArgs string) string {
 	return Truncate(rawArgs, 120)
 }
 
-func (globTool) Schema() openai.ChatCompletionToolParam {
+func (globTool) Schema() ai.ToolSpec {
 	return makeSchema(Glob.Name(),
 		"Find files matching a glob pattern. Supports ** for recursive matching. A pattern with no '/' is matched against the basename recursively (so 'config.go' finds it anywhere). Skips .git, node_modules, vendor. Prefer over `bash find`.",
-		shared.FunctionParameters{
+		map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"pattern":     strProp("Glob pattern, e.g. '**/*.go', 'cmd/**/*.go', or 'config.go'."),

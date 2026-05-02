@@ -7,8 +7,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/openai/openai-go"
-	"github.com/openai/openai-go/shared"
+	"lambda/internal/ai"
 )
 
 // EditArgs is the typed shape of edit's JSON arguments.
@@ -33,10 +32,10 @@ func NewEdit(sessionRoot string) editTool {
 
 func (editTool) Name() string { return "edit" }
 
-func (editTool) Schema() openai.ChatCompletionToolParam {
+func (editTool) Schema() ai.ToolSpec {
 	return makeSchema(Edit.Name(),
 		"Replace a unique substring in a file. Fails if old_string is not found or matches more than once (unless replace_all is true). Pick old_string with enough surrounding context to be unique.",
-		shared.FunctionParameters{
+		map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"path":        strProp("Path of the file to edit."),

@@ -7,10 +7,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/openai/openai-go"
-	"github.com/openai/openai-go/packages/param"
-	"github.com/openai/openai-go/shared"
-
+	"lambda/internal/ai"
 	"lambda/internal/config"
 	"lambda/internal/tools"
 )
@@ -57,10 +54,10 @@ func (EventError) isEvent()         {}
 // Agent is the main tool-calling loop. It is not safe for concurrent use —
 // one turn at a time per agent.
 type Agent struct {
-	completer Completer
+	completer ai.Completer
 	model     string
 	registry  tools.Registry
-	tools     []openai.ChatCompletionToolParam
+	tools     []ai.ToolSpec
 	history   *history
 	maxSteps  int
 	approver  *Approver
@@ -76,7 +73,7 @@ type Agent struct {
 // takes ownership of logger and closes it via Close.
 func New(cfg *config.Config, systemPrompt string, registry tools.Registry, approver *Approver, logger *Logger) *Agent {
 	a := &Agent{
-		completer: NewOpenAICompleter(cfg.BaseURL, cfg.APIKey, !cfg.NoStream),
+		completer: ai.NewOpenAICompleter(cfg.BaseURL, cfg.APIKey, !cfg.NoStream),
 		model:     cfg.Model,
 		registry:  registry,
 		tools:     registry.Schemas(),
@@ -124,7 +121,7 @@ func (a *Agent) Reset() {
 // the turn finishes (successfully or otherwise).
 func (a *Agent) Run(ctx context.Context, userInput string, out chan<- Event) {
 	defer close(out)
-	a.history.messages = append(a.history.messages, openai.UserMessage(userInput))
+	a.history.messages = append(a.history.messages, ai.UserMessage(userInput))
 	a.emitContextUsage(ctx, out)
 	a.logger.Write("turn_start", map[string]any{"input_chars": len(userInput)})
 
@@ -138,7 +135,7 @@ func (a *Agent) Run(ctx context.Context, userInput string, out chan<- Event) {
 			}
 			return
 		}
-		a.history.messages = append(a.history.messages, openai.ChatCompletionMessageParamUnion{OfAssistant: assistant})
+		a.history.messages = append(a.history.messages, assistant)
 		a.emitContextUsage(ctx, out)
 
 		if len(assistant.ToolCalls) == 0 {
@@ -150,7 +147,7 @@ func (a *Agent) Run(ctx context.Context, userInput string, out chan<- Event) {
 				// Cancelled mid-turn. Every tool_call_id on the assistant message
 				// must have a paired tool message, or the next request 400s.
 				for _, rem := range assistant.ToolCalls[i+1:] {
-					a.history.messages = append(a.history.messages, openai.ToolMessage("cancelled by user", rem.ID))
+					a.history.messages = append(a.history.messages, ai.ToolMessage("cancelled by user", rem.ID))
 				}
 				a.emitContextUsage(ctx, out)
 				return
@@ -163,14 +160,14 @@ func (a *Agent) Run(ctx context.Context, userInput string, out chan<- Event) {
 // completeOne issues one completion request via the Completer and returns the
 // assistant message to append to the history. The completer's content/reasoning
 // callbacks are wired straight into the agent's event channel.
-func (a *Agent) completeOne(ctx context.Context, out chan<- Event) (*openai.ChatCompletionAssistantMessageParam, error) {
+func (a *Agent) completeOne(ctx context.Context, out chan<- Event) (ai.Message, error) {
 	a.compactIfNeeded(ctx, out)
 	// Snapshot the char count of the exact message set we're sending; pairs
 	// with prompt_tokens in the response to calibrate charsPerToken.
 	charsSent := a.history.totalChars()
 
-	params := openai.ChatCompletionNewParams{
-		Model:    shared.ChatModel(a.model),
+	req := ai.CompletionRequest{
+		Model:    a.model,
 		Messages: a.history.messages,
 		Tools:    a.tools,
 	}
@@ -186,23 +183,23 @@ func (a *Agent) completeOne(ctx context.Context, out chan<- Event) (*openai.Chat
 	onContent := func(s string) { a.emit(ctx, out, EventContentDelta{Text: s}) }
 	onReasoning := func(s string) { a.emit(ctx, out, EventThinkingDelta{Text: s}) }
 
-	res, err := a.completer.Complete(ctx, params, onContent, onReasoning)
+	res, err := a.completer.Complete(ctx, req, onContent, onReasoning)
 	if err != nil {
-		if errors.Is(err, errNoChoices) {
+		if errors.Is(err, ai.ErrNoChoices) {
 			a.logger.Write("response_error", map[string]any{"err": "no choices"})
-			return nil, err
+			return ai.Message{}, err
 		}
 		a.logger.Write("response_error", map[string]any{"err": err.Error()})
-		return nil, err
+		return ai.Message{}, err
 	}
 
 	a.history.recordTokenUsage(charsSent, res.PromptTokens)
 	a.emitContextUsage(ctx, out)
-	a.logResponse(res.FinishReason, res.Msg.Content, res.Reasoning, len(res.Msg.ToolCalls), res.PromptTokens, res.CompletionTokens)
-	if res.Msg.Content != "" {
-		a.emit(ctx, out, EventAssistantDone{Text: res.Msg.Content})
+	a.logResponse(res.FinishReason, res.Message.Content, res.Reasoning, len(res.Message.ToolCalls), res.PromptTokens, res.CompletionTokens)
+	if res.Message.Content != "" {
+		a.emit(ctx, out, EventAssistantDone{Text: res.Message.Content})
 	}
-	return assistantFromMessage(res.Msg), nil
+	return res.Message, nil
 }
 
 // logResponse records one model completion to the debug log. Bodies are
@@ -227,13 +224,13 @@ func (a *Agent) logResponse(finishReason, content, reasoning string, toolCalls i
 // handleToolCall handles one tool call, including the confirmation flow for
 // destructive tools. Returns false if ctx was cancelled before the tool result
 // could be recorded (so the caller should stop processing more tool calls).
-func (a *Agent) handleToolCall(ctx context.Context, tc openai.ChatCompletionMessageToolCallParam, out chan<- Event) bool {
-	name := tc.Function.Name
-	args := tc.Function.Arguments
+func (a *Agent) handleToolCall(ctx context.Context, tc ai.ToolCall, out chan<- Event) bool {
+	name := tc.Name
+	args := tc.Arguments
 
 	if !a.approver.Allow(ctx, name, args) {
 		a.emit(ctx, out, EventToolDenied{ID: tc.ID, Name: name})
-		a.history.messages = append(a.history.messages, openai.ToolMessage("denied this tool call", tc.ID))
+		a.history.messages = append(a.history.messages, ai.ToolMessage("denied this tool call", tc.ID))
 		a.emitContextUsage(ctx, out)
 		return ctx.Err() == nil
 	}
@@ -241,7 +238,7 @@ func (a *Agent) handleToolCall(ctx context.Context, tc openai.ChatCompletionMess
 	a.emit(ctx, out, EventToolStart{ID: tc.ID, Name: name, Args: args})
 	result := a.registry.Execute(ctx, name, args)
 	a.emit(ctx, out, EventToolResult{ID: tc.ID, Name: name, Result: result})
-	a.history.messages = append(a.history.messages, openai.ToolMessage(result, tc.ID))
+	a.history.messages = append(a.history.messages, ai.ToolMessage(result, tc.ID))
 	a.emitContextUsage(ctx, out)
 
 	return ctx.Err() == nil
@@ -269,28 +266,6 @@ func (a *Agent) compactIfNeeded(ctx context.Context, out chan<- Event) {
 func (a *Agent) emitContextUsage(ctx context.Context, out chan<- Event) {
 	used, limit := a.ContextUsage()
 	a.emit(ctx, out, EventContextUsage{Used: used, Limit: limit})
-}
-
-// assistantFromMessage converts a response ChatCompletionMessage into the
-// param form needed for the next request's message history.
-func assistantFromMessage(msg openai.ChatCompletionMessage) *openai.ChatCompletionAssistantMessageParam {
-	p := &openai.ChatCompletionAssistantMessageParam{}
-	if msg.Content != "" {
-		p.Content.OfString = param.NewOpt(msg.Content)
-	}
-	if len(msg.ToolCalls) > 0 {
-		p.ToolCalls = make([]openai.ChatCompletionMessageToolCallParam, len(msg.ToolCalls))
-		for i, tc := range msg.ToolCalls {
-			p.ToolCalls[i] = openai.ChatCompletionMessageToolCallParam{
-				ID: tc.ID,
-				Function: openai.ChatCompletionMessageToolCallFunctionParam{
-					Name:      tc.Function.Name,
-					Arguments: tc.Function.Arguments,
-				},
-			}
-		}
-	}
-	return p
 }
 
 func (a *Agent) emit(ctx context.Context, out chan<- Event, e Event) {

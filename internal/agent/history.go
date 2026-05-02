@@ -4,13 +4,13 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/openai/openai-go"
+	"lambda/internal/ai"
 )
 
 // history owns the chat message slice and the bookkeeping for compaction.
 // Not safe for concurrent use — Agent serializes per-turn access.
 type history struct {
-	messages         []openai.ChatCompletionMessageParamUnion
+	messages         []ai.Message
 	maxContextTokens int     // soft cap on prompt tokens; <=0 disables compaction
 	charsPerToken    float64 // running calibration from server-reported prompt_tokens; 0 means no data yet
 	droppedTurns     int
@@ -37,7 +37,7 @@ func (s compactStats) changed() bool { return s.turnsDropped != 0 || s.shrunk }
 
 func newHistory(systemPrompt string, maxContextTokens int) *history {
 	return &history{
-		messages:         []openai.ChatCompletionMessageParamUnion{openai.SystemMessage(systemPrompt)},
+		messages:         []ai.Message{ai.SystemMessage(systemPrompt)},
 		maxContextTokens: maxContextTokens,
 	}
 }
@@ -105,11 +105,11 @@ func (h *history) shrinkLargestToolMessages() {
 		if idx < 0 || size <= minBody {
 			return
 		}
-		m := h.messages[idx].OfTool
-		body := m.Content.OfString.Value
+		m := h.messages[idx]
+		body := m.Content
 		target := max(size/2, minBody)
 		trimmed := body[:target] + fmt.Sprintf("\n… (tool result truncated from %d to %d bytes to fit context)", len(body), target)
-		h.messages[idx] = openai.ToolMessage(trimmed, m.ToolCallID)
+		h.messages[idx] = ai.ToolMessage(trimmed, m.ToolCallID)
 	}
 }
 
@@ -118,10 +118,10 @@ func (h *history) shrinkLargestToolMessages() {
 func (h *history) largestToolMessage() (int, int) {
 	bestIdx, bestSize := -1, 0
 	for i, m := range h.messages {
-		if m.OfTool == nil || !m.OfTool.Content.OfString.Valid() {
+		if m.Role != ai.RoleTool || m.Content == "" {
 			continue
 		}
-		s := m.OfTool.Content.OfString.Value
+		s := m.Content
 		if len(s) > bestSize {
 			bestSize = len(s)
 			bestIdx = i
@@ -137,7 +137,7 @@ func (h *history) refreshElisionNote() {
 	if h.droppedTurns == 0 {
 		return
 	}
-	note := openai.SystemMessage(fmt.Sprintf(
+	note := ai.SystemMessage(fmt.Sprintf(
 		"[note: %d earlier turn(s) omitted to fit the context window]",
 		h.droppedTurns,
 	))
@@ -214,23 +214,7 @@ func (h *history) firstUserAfter(start int) int {
 }
 
 // roleOf returns the message's role string ("system" / "user" / "assistant" /
-// "tool" / "developer" / "function"), or "" if undetermined. We discriminate
-// by the union's OfX fields rather than GetRole because the typed-constant
-// role fields (e.g. constant.User) zero-value to "" and GetRole returns that.
-func roleOf(m openai.ChatCompletionMessageParamUnion) string {
-	switch {
-	case m.OfSystem != nil:
-		return "system"
-	case m.OfUser != nil:
-		return "user"
-	case m.OfAssistant != nil:
-		return "assistant"
-	case m.OfTool != nil:
-		return "tool"
-	case m.OfDeveloper != nil:
-		return "developer"
-	case m.OfFunction != nil:
-		return "function"
-	}
-	return ""
+// "tool"), or "" if unset.
+func roleOf(m ai.Message) string {
+	return string(m.Role)
 }

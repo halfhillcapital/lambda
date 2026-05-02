@@ -8,8 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/openai/openai-go"
-	"github.com/openai/openai-go/shared"
+	"lambda/internal/ai"
 )
 
 // WriteArgs is the typed shape of write's JSON arguments.
@@ -38,10 +37,10 @@ func NewWrite(sessionRoot string) writeTool {
 
 func (writeTool) Name() string { return "write" }
 
-func (writeTool) Schema() openai.ChatCompletionToolParam {
+func (writeTool) Schema() ai.ToolSpec {
 	return makeSchema(Write.Name(),
 		"Create a new file or completely overwrite an existing one with the given content.",
-		shared.FunctionParameters{
+		map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"path":    strProp("Path of the file to create or overwrite."),

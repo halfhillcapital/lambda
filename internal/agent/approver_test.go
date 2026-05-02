@@ -4,8 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/openai/openai-go"
-
+	"lambda/internal/ai"
 	"lambda/internal/tools"
 )
 
@@ -17,9 +16,9 @@ type stubTool struct {
 	calls   *[][2]string
 }
 
-func (s *stubTool) Name() string                           { return s.name }
-func (s *stubTool) Schema() openai.ChatCompletionToolParam { return openai.ChatCompletionToolParam{} }
-func (s *stubTool) Summarize(string) string                { return "" }
+func (s *stubTool) Name() string            { return s.name }
+func (s *stubTool) Schema() ai.ToolSpec     { return ai.ToolSpec{Name: s.name} }
+func (s *stubTool) Summarize(string) string { return "" }
 func (s *stubTool) Classify(args string) tools.Verdict {
 	*s.calls = append(*s.calls, [2]string{s.name, args})
 	return s.verdict

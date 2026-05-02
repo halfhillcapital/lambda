@@ -19,7 +19,7 @@ func TestNewSchemas(t *testing.T) {
 		t.Fatalf("Schemas() returned %d tools, want %d", len(got), len(want))
 	}
 	for _, s := range got {
-		delete(want, s.Function.Name)
+		delete(want, s.Name)
 	}
 	if len(want) != 0 {
 		t.Errorf("Schemas() missing tools: %v", want)

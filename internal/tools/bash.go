@@ -9,8 +9,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/openai/openai-go"
-	"github.com/openai/openai-go/shared"
+	"lambda/internal/ai"
 )
 
 const (
@@ -60,10 +59,10 @@ func (bashTool) Preview(rawArgs string) []PreviewLine {
 	return []PreviewLine{{Kind: PreviewCommand, Text: "$ " + a.Command}}
 }
 
-func (bashTool) Schema() openai.ChatCompletionToolParam {
+func (bashTool) Schema() ai.ToolSpec {
 	return makeSchema(Bash.Name(),
 		"Run a bash command non-interactively (empty stdin) and return its combined stdout+stderr. Bash is required on PATH (git bash on Windows). Default timeout 120s.",
-		shared.FunctionParameters{
+		map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"command":         strProp("Bash command line, e.g. 'go test ./...'"),

@@ -7,29 +7,25 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/openai/openai-go"
-	"github.com/openai/openai-go/packages/param"
-
+	"lambda/internal/ai"
 	"lambda/internal/tools"
 )
 
 // makeAssistant builds an assistant message with text content for tests.
-func makeAssistant(text string) openai.ChatCompletionMessageParamUnion {
-	return openai.ChatCompletionMessageParamUnion{OfAssistant: &openai.ChatCompletionAssistantMessageParam{
-		Content: openai.ChatCompletionAssistantMessageParamContentUnion{OfString: param.NewOpt(text)},
-	}}
+func makeAssistant(text string) ai.Message {
+	return ai.AssistantMessage(text)
 }
 
 func TestRoleOf(t *testing.T) {
 	cases := []struct {
 		name string
-		msg  openai.ChatCompletionMessageParamUnion
+		msg  ai.Message
 		want string
 	}{
-		{"system", openai.SystemMessage("hi"), "system"},
-		{"user", openai.UserMessage("hi"), "user"},
+		{"system", ai.SystemMessage("hi"), "system"},
+		{"user", ai.UserMessage("hi"), "user"},
 		{"assistant", makeAssistant("hi"), "assistant"},
-		{"tool", openai.ToolMessage("res", "id123"), "tool"},
+		{"tool", ai.ToolMessage("res", "id123"), "tool"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -41,9 +37,9 @@ func TestRoleOf(t *testing.T) {
 }
 
 func TestTotalCharsCountsAllMessages(t *testing.T) {
-	h := &history{messages: []openai.ChatCompletionMessageParamUnion{
-		openai.SystemMessage("system"),
-		openai.UserMessage("hello"),
+	h := &history{messages: []ai.Message{
+		ai.SystemMessage("system"),
+		ai.UserMessage("hello"),
 	}}
 	first := h.totalChars()
 	if first <= 0 {
@@ -57,9 +53,9 @@ func TestTotalCharsCountsAllMessages(t *testing.T) {
 
 func TestCompactDisabledByDefault(t *testing.T) {
 	h := &history{
-		messages: []openai.ChatCompletionMessageParamUnion{
-			openai.SystemMessage("sys"),
-			openai.UserMessage("hello"),
+		messages: []ai.Message{
+			ai.SystemMessage("sys"),
+			ai.UserMessage("hello"),
 		},
 		maxContextTokens: 0,
 	}
@@ -75,9 +71,9 @@ func TestCompactDisabledByDefault(t *testing.T) {
 
 func TestCompactNoOpUnderCap(t *testing.T) {
 	h := &history{
-		messages: []openai.ChatCompletionMessageParamUnion{
-			openai.SystemMessage("sys"),
-			openai.UserMessage("hi"),
+		messages: []ai.Message{
+			ai.SystemMessage("sys"),
+			ai.UserMessage("hi"),
 			makeAssistant("hello"),
 		},
 		maxContextTokens: 30_000,
@@ -93,12 +89,12 @@ func TestCompactNoOpUnderCap(t *testing.T) {
 }
 
 func TestCompactDropsOldestTurn(t *testing.T) {
-	msgs := []openai.ChatCompletionMessageParamUnion{
-		openai.SystemMessage("sys prompt"),
+	msgs := []ai.Message{
+		ai.SystemMessage("sys prompt"),
 	}
 	for i := range 5 {
 		msgs = append(msgs,
-			openai.UserMessage(strings.Repeat("u", 200)+itoa(i)),
+			ai.UserMessage(strings.Repeat("u", 200)+itoa(i)),
 			makeAssistant(strings.Repeat("a", 200)+itoa(i)),
 		)
 	}
@@ -129,12 +125,12 @@ func TestCompactDropsOldestTurn(t *testing.T) {
 }
 
 func TestCompactInsertsAndUpdatesElisionNote(t *testing.T) {
-	msgs := []openai.ChatCompletionMessageParamUnion{
-		openai.SystemMessage("sys"),
+	msgs := []ai.Message{
+		ai.SystemMessage("sys"),
 	}
 	for i := range 5 {
 		msgs = append(msgs,
-			openai.UserMessage(strings.Repeat("u", 200)+itoa(i)),
+			ai.UserMessage(strings.Repeat("u", 200)+itoa(i)),
 			makeAssistant(strings.Repeat("a", 200)+itoa(i)),
 		)
 	}
@@ -161,7 +157,7 @@ func TestCompactInsertsAndUpdatesElisionNote(t *testing.T) {
 	// Add more turns so compaction runs again and updates the count.
 	for i := range 4 {
 		h.messages = append(h.messages,
-			openai.UserMessage(strings.Repeat("U", 300)+itoa(i)),
+			ai.UserMessage(strings.Repeat("U", 300)+itoa(i)),
 			makeAssistant(strings.Repeat("A", 300)+itoa(i)),
 		)
 	}
@@ -188,10 +184,10 @@ func TestCompactInsertsAndUpdatesElisionNote(t *testing.T) {
 
 func TestCompactLogsCompactionEvent(t *testing.T) {
 	var buf bytes.Buffer
-	msgs := []openai.ChatCompletionMessageParamUnion{openai.SystemMessage("sys")}
+	msgs := []ai.Message{ai.SystemMessage("sys")}
 	for i := range 5 {
 		msgs = append(msgs,
-			openai.UserMessage(strings.Repeat("u", 200)+itoa(i)),
+			ai.UserMessage(strings.Repeat("u", 200)+itoa(i)),
 			makeAssistant(strings.Repeat("a", 200)+itoa(i)),
 		)
 	}
@@ -233,9 +229,9 @@ func TestCompactNoCompactionEventWhenNoOp(t *testing.T) {
 	var buf bytes.Buffer
 	a := &Agent{
 		history: &history{
-			messages: []openai.ChatCompletionMessageParamUnion{
-				openai.SystemMessage("sys"),
-				openai.UserMessage("hi"),
+			messages: []ai.Message{
+				ai.SystemMessage("sys"),
+				ai.UserMessage("hi"),
 			},
 			maxContextTokens: 30_000,
 		},
@@ -258,9 +254,9 @@ func TestCompactNoCompactionEventWhenNoOp(t *testing.T) {
 
 func TestCompactKeepsAtLeastOneTurn(t *testing.T) {
 	h := &history{
-		messages: []openai.ChatCompletionMessageParamUnion{
-			openai.SystemMessage("sys"),
-			openai.UserMessage(strings.Repeat("x", 5000)),
+		messages: []ai.Message{
+			ai.SystemMessage("sys"),
+			ai.UserMessage(strings.Repeat("x", 5000)),
 		},
 		maxContextTokens: 30,
 	}
@@ -278,8 +274,8 @@ func TestCompactKeepsAtLeastOneTurn(t *testing.T) {
 }
 
 func TestEstimateTokensUsesDefaultRatioWhenUncalibrated(t *testing.T) {
-	h := &history{messages: []openai.ChatCompletionMessageParamUnion{
-		openai.UserMessage(strings.Repeat("x", 350)),
+	h := &history{messages: []ai.Message{
+		ai.UserMessage(strings.Repeat("x", 350)),
 	}}
 	chars := h.totalChars()
 	got := h.estimateTokens()
@@ -308,8 +304,8 @@ func TestRecordTokenUsageCalibrates(t *testing.T) {
 }
 
 func TestEstimateTokensUsesCalibratedRatio(t *testing.T) {
-	h := &history{messages: []openai.ChatCompletionMessageParamUnion{
-		openai.UserMessage(strings.Repeat("x", 400)),
+	h := &history{messages: []ai.Message{
+		ai.UserMessage(strings.Repeat("x", 400)),
 	}}
 	before := h.estimateTokens()
 	// A looser ratio (more chars per token) should lower the estimate.
@@ -325,11 +321,11 @@ func TestCompactShrinksOversizedToolMessage(t *testing.T) {
 	// must kick in and truncate the tool message body until we fit.
 	huge := strings.Repeat("x", 10_000)
 	h := &history{
-		messages: []openai.ChatCompletionMessageParamUnion{
-			openai.SystemMessage("sys"),
-			openai.UserMessage("run a big command"),
+		messages: []ai.Message{
+			ai.SystemMessage("sys"),
+			ai.UserMessage("run a big command"),
 			makeAssistant("calling tool"),
-			openai.ToolMessage(huge, "call_1"),
+			ai.ToolMessage(huge, "call_1"),
 		},
 		maxContextTokens: 600,
 	}
@@ -339,10 +335,10 @@ func TestCompactShrinksOversizedToolMessage(t *testing.T) {
 		t.Errorf("shrink failed: estimateTokens=%d > cap=%d", got, h.maxContextTokens)
 	}
 	// Tool message must still exist and keep its tool_call_id so the pairing invariant holds.
-	var tool *openai.ChatCompletionToolMessageParam
+	var tool *ai.Message
 	for _, m := range h.messages {
-		if m.OfTool != nil {
-			tool = m.OfTool
+		if m.Role == ai.RoleTool {
+			tool = &m
 		}
 	}
 	if tool == nil {
@@ -351,7 +347,7 @@ func TestCompactShrinksOversizedToolMessage(t *testing.T) {
 	if tool.ToolCallID != "call_1" {
 		t.Errorf("tool_call_id not preserved after shrink: %q", tool.ToolCallID)
 	}
-	body := tool.Content.OfString.Value
+	body := tool.Content
 	if !strings.Contains(body, "truncated from") {
 		t.Errorf("expected truncation marker in body; got %q", body[:min(80, len(body))])
 	}
@@ -368,11 +364,11 @@ func TestReset(t *testing.T) {
 
 	a := &Agent{
 		history: &history{
-			messages: []openai.ChatCompletionMessageParamUnion{
-				openai.SystemMessage("sys"),
-				openai.UserMessage("hi"),
+			messages: []ai.Message{
+				ai.SystemMessage("sys"),
+				ai.UserMessage("hi"),
 				makeAssistant("hello"),
-				openai.UserMessage("more"),
+				ai.UserMessage("more"),
 			},
 			droppedTurns:   3,
 			elisionNoteIdx: 1,

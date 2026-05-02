@@ -12,8 +12,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/openai/openai-go"
-	"github.com/openai/openai-go/shared"
+	"lambda/internal/ai"
 )
 
 const (
@@ -55,10 +54,10 @@ func (grepTool) Summarize(rawArgs string) string {
 	return Truncate(rawArgs, 120)
 }
 
-func (grepTool) Schema() openai.ChatCompletionToolParam {
+func (grepTool) Schema() ai.ToolSpec {
 	return makeSchema(Grep.Name(),
 		"Search file contents for a regex pattern (RE2 syntax). Returns matching lines as path:line:text. Skips .git, node_modules, vendor, and binary files. Prefer over `bash grep` — faster and budget-aware.",
-		shared.FunctionParameters{
+		map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"pattern":          strProp("Regex pattern (RE2 syntax)."),

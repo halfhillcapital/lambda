@@ -7,8 +7,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/openai/openai-go"
-	"github.com/openai/openai-go/shared"
+	"lambda/internal/ai"
 )
 
 // readFileMaxBytes caps how much of a file Read returns inline. Larger files
@@ -39,10 +38,10 @@ func (readTool) Summarize(rawArgs string) string {
 	return Truncate(rawArgs, 120)
 }
 
-func (readTool) Schema() openai.ChatCompletionToolParam {
+func (readTool) Schema() ai.ToolSpec {
 	return makeSchema(Read.Name(),
 		"Read the contents of a file. Returns the file text, truncated to ~256KB with a notice if the file is larger (use bash with sed/awk/head/tail for slicing larger files).",
-		shared.FunctionParameters{
+		map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"path": strProp("Path to the file, absolute or relative to the agent's working directory."),
