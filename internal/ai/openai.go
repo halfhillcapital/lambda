@@ -136,8 +136,39 @@ func (c *openAICompleter) completeStreaming(
 	onContent, onReasoning func(string),
 ) (CompletionResult, error) {
 	var (
+		res     CompletionResult
+		err     error
+		started bool
+	)
+	for attempt := 0; ; attempt++ {
+		res, started, err = c.completeStreamingOnce(ctx, params, opts, onContent, onReasoning)
+		if err == nil || started || !isTransient(err) || attempt >= len(retryBackoffs) {
+			break
+		}
+		timer := time.NewTimer(jitter(retryBackoffs[attempt]))
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+			return CompletionResult{}, humanizeError(err)
+		}
+	}
+	if err != nil {
+		return CompletionResult{}, humanizeError(err)
+	}
+	return res, nil
+}
+
+func (c *openAICompleter) completeStreamingOnce(
+	ctx context.Context,
+	params openai.ChatCompletionNewParams,
+	opts []option.RequestOption,
+	onContent, onReasoning func(string),
+) (CompletionResult, bool, error) {
+	var (
 		acc       openai.ChatCompletionAccumulator
 		reasoning strings.Builder
+		started   bool
 	)
 	stream := c.client.Chat.Completions.NewStreaming(ctx, params, opts...)
 	for stream.Next() {
@@ -146,6 +177,7 @@ func (c *openAICompleter) completeStreaming(
 		if len(chunk.Choices) == 0 {
 			continue
 		}
+		started = true
 		delta := chunk.Choices[0].Delta
 		if r := extractReasoning(delta.JSON.ExtraFields); r != "" {
 			reasoning.WriteString(r)
@@ -158,10 +190,10 @@ func (c *openAICompleter) completeStreaming(
 		}
 	}
 	if err := stream.Err(); err != nil {
-		return CompletionResult{}, humanizeError(err)
+		return CompletionResult{}, started, err
 	}
 	if len(acc.Choices) == 0 {
-		return CompletionResult{}, ErrNoChoices
+		return CompletionResult{}, started, ErrNoChoices
 	}
 	return CompletionResult{
 		Message:          messageFromOpenAI(acc.Choices[0].Message),
@@ -170,7 +202,7 @@ func (c *openAICompleter) completeStreaming(
 		PromptTokens:     acc.Usage.PromptTokens,
 		CompletionTokens: acc.Usage.CompletionTokens,
 		Cost:             c.costFrom(acc.Usage.JSON.ExtraFields),
-	}, nil
+	}, started, nil
 }
 
 // costFrom reads usage.cost only for providers that report it. Avoids a stray
