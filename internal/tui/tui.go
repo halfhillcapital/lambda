@@ -27,11 +27,13 @@ type uiModel struct {
 	session *worktree.Session
 	askCh   chan confirmRequest
 
-	commands  slashCommandDispatcher
-	turn      *turnRunner
-	stepsUsed int
-	tokenUsed int
-	tokenCap  int
+	commands     slashCommandDispatcher
+	turn         *turnRunner
+	stepsUsed    int
+	tokenUsed    int
+	tokenCap     int
+	turnCost     float64 // USD spent in the current round, reset on startTurn
+	sessionCost  float64 // running total across the session
 
 	viewport   viewport.Model
 	input      textarea.Model
@@ -159,9 +161,17 @@ func (m *uiModel) footer() string {
 	sep := statusStyle.Render(" · ")
 	var statusR string
 	if m.turn.Active() {
-		statusR = m.spinner.View() + statusStyle.Render(fmt.Sprintf(" step %d/%d", m.stepsUsed, m.cfg.MaxSteps)) + sep + tokens + sep + statusStyle.Render("Ctrl+C cancel")
+		statusR = m.spinner.View() + statusStyle.Render(fmt.Sprintf(" step %d/%d", m.stepsUsed, m.cfg.MaxSteps)) + sep + tokens
+		if cost := m.renderSessionCost(); cost != "" {
+			statusR += sep + cost
+		}
+		statusR += sep + statusStyle.Render("Ctrl+C cancel")
 	} else {
-		statusR = tokens + sep + statusStyle.Render("ready")
+		statusR = tokens
+		if cost := m.renderSessionCost(); cost != "" {
+			statusR += sep + cost
+		}
+		statusR += sep + statusStyle.Render("ready")
 	}
 	pad := m.width - lipgloss.Width(statusL) - lipgloss.Width(statusR)
 	if pad < 1 {
@@ -189,6 +199,25 @@ func (m *uiModel) renderTokenUsage() string {
 	default:
 		return statusStyle.Render(label)
 	}
+}
+
+// renderSessionCost returns the running session cost formatted for the status
+// line, or "" when no cost has been reported (the common case for local
+// servers that don't bill).
+func (m *uiModel) renderSessionCost() string {
+	if m.sessionCost <= 0 {
+		return ""
+	}
+	return statusStyle.Render(formatCost(m.sessionCost))
+}
+
+// formatCost renders a USD amount with enough precision to be useful for
+// per-call costs while staying compact: $0.0042, $0.42, $4.20, $42.00.
+func formatCost(usd float64) string {
+	if usd >= 1 {
+		return fmt.Sprintf("$%.2f", usd)
+	}
+	return fmt.Sprintf("$%.4f", usd)
 }
 
 // formatTokenCount renders n as either a raw number (under 1K) or a "12.3k"

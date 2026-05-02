@@ -177,6 +177,8 @@ func (m *uiModel) handleSlashCommand(text string) tea.Cmd {
 	case slashCommandReset:
 		m.agent.Reset()
 		m.transcript.Reset()
+		m.turnCost = 0
+		m.sessionCost = 0
 		for _, notice := range result.notices {
 			m.transcript.AppendNotice(notice)
 		}
@@ -227,5 +229,6 @@ func (m *uiModel) startTurn(userInput string) tea.Cmd {
 	m.refreshViewport()
 
 	m.stepsUsed = 0
+	m.turnCost = 0
 	return m.turn.Start(userInput)
 }

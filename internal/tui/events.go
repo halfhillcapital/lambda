@@ -57,9 +57,16 @@ func (m *uiModel) handleEvent(ev agent.Event) {
 	if result.hasTokenUsage {
 		m.tokenUsed, m.tokenCap = result.tokenUsed, result.tokenCap
 	}
+	if result.hasCost {
+		m.turnCost += result.turnCost
+		m.sessionCost = result.sessionCost
+	}
 	if result.turnDone {
 		m.turn.Finish()
 		m.input.Focus()
+		if m.turnCost > 0 {
+			m.transcript.AppendNotice(formatCost(m.turnCost) + " this turn · " + formatCost(m.sessionCost) + " session")
+		}
 		if result.turnDoneReason != "" && result.turnDoneReason != "done" {
 			m.transcript.AppendNotice(result.turnDoneReason)
 		}

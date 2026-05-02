@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"lambda/internal/ai"
 	"lambda/internal/config"
 	"lambda/internal/tools"
 )
@@ -461,4 +462,68 @@ func TestRun_Streaming_StitchesContentAndToolCalls(t *testing.T) {
 	if !reflect.DeepEqual(asstIDs, want) || !reflect.DeepEqual(toolIDs, want) {
 		t.Errorf("turn-2 wire pairing: assistant=%v tool=%v, want both = %v", asstIDs, toolIDs, want)
 	}
+}
+
+// TestReasoningPolicy_PlanningOnly verifies the agent loop sends the configured
+// reasoning effort only on the first turn after a user message; turns that
+// follow tool results omit the field. See docs/adr/0002-reasoning-policy.md.
+func TestReasoningPolicy_PlanningOnly(t *testing.T) {
+	srv := newScriptedServer(t, func(call int, _ recordedRequest) (int, any) {
+		switch call {
+		case 0:
+			// Planning turn returns one tool call.
+			return 200, cannedAssistant("", "tool_calls", 0, fakeToolCall{
+				ID: "c1", Name: "read", Arguments: `{"path":"nonexistent"}`,
+			})
+		default:
+			// Follow-up turn after the tool result; reply with no tool calls.
+			return 200, cannedAssistant("done", "stop", 0)
+		}
+	})
+
+	a := newAgent(t, srv, func(c *config.Config) {
+		c.Reasoning = ai.ReasoningHigh
+	})
+	out := make(chan Event, 64)
+	a.Run(context.Background(), "do something", out)
+	drainEvents(out)
+
+	if got := srv.calls(); got != 2 {
+		t.Fatalf("server calls = %d, want 2", got)
+	}
+
+	first := decodeReasoning(t, srv.request(0).Raw)
+	if first == nil || first["effort"] != "high" {
+		t.Errorf("turn 0 (planning) reasoning = %v, want effort=high", first)
+	}
+
+	second := decodeReasoning(t, srv.request(1).Raw)
+	if second != nil {
+		t.Errorf("turn 1 (follow-up) reasoning = %v, want omitted", second)
+	}
+}
+
+func TestReasoningPolicy_OffStaysOff(t *testing.T) {
+	srv := newScriptedServer(t, func(call int, _ recordedRequest) (int, any) {
+		return 200, cannedAssistant("done", "stop", 0)
+	})
+
+	a := newAgent(t, srv) // no Reasoning set; defaults to off
+	out := make(chan Event, 64)
+	a.Run(context.Background(), "hi", out)
+	drainEvents(out)
+
+	if got := decodeReasoning(t, srv.request(0).Raw); got != nil {
+		t.Errorf("reasoning = %v, want omitted when effort is off", got)
+	}
+}
+
+func decodeReasoning(t *testing.T, body []byte) map[string]any {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	r, _ := m["reasoning"].(map[string]any)
+	return r
 }

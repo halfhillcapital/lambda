@@ -1,7 +1,8 @@
 # lambda
 
 A minimal CLI coding agent for local LLMs via any OpenAI-compatible endpoint
-(Ollama, LM Studio, vLLM, TGI, …).
+(Ollama, LM Studio, vLLM, TGI, …) with first-class support for
+[OpenRouter](https://openrouter.ai/) when you need to reach for a cloud model.
 
 - **REPL** backed by [Bubble Tea](https://github.com/charmbracelet/bubbletea)
   with streaming, markdown rendering, and a confirmation modal for destructive
@@ -46,13 +47,51 @@ echo "fix the bug in main.go" | lambda
 OPENAI_BASE_URL=http://localhost:1234/v1 OPENAI_MODEL=qwen2.5-coder lambda
 ```
 
-| Env var           | Default                       | Notes                              |
-|-------------------|-------------------------------|------------------------------------|
-| `OPENAI_MODEL`    | *(required)*                  | model ID the server expects        |
-| `OPENAI_BASE_URL` | `http://localhost:11434/v1`   | OpenAI-compatible endpoint         |
-| `OPENAI_API_KEY`  | `sk-local`                    | most local servers ignore the value |
+| Env var              | Default                       | Notes                              |
+|----------------------|-------------------------------|------------------------------------|
+| `OPENAI_MODEL`       | *(required)*                  | model ID the server expects        |
+| `OPENAI_BASE_URL`    | `http://localhost:11434/v1`   | OpenAI-compatible endpoint         |
+| `OPENAI_API_KEY`     | `sk-local`                    | most local servers ignore the value |
+| `LAMBDA_PROVIDER`    | `openai-compat`               | or `openrouter`                    |
+| `OPENROUTER_API_KEY` | *(unset)*                     | preferred over `OPENAI_API_KEY` when provider is `openrouter` |
+| `LAMBDA_REASONING`   | `off`                         | `off`, `low`, `medium`, or `high`  |
 
 Flags override env vars. Run `lambda -h` for the full list.
+
+## OpenRouter
+
+```bash
+OPENROUTER_API_KEY=sk-or-... \
+OPENAI_MODEL=anthropic/claude-opus-4 \
+lambda --provider openrouter
+```
+
+When `--provider openrouter` is set, lambda:
+
+- Defaults the base URL to `https://openrouter.ai/api/v1`.
+- Reads `OPENROUTER_API_KEY` (falls back to `OPENAI_API_KEY` so existing
+  setups keep working).
+- Opts in to detailed usage so per-call USD cost is reported in the status
+  line and printed to stderr at the end of one-shot runs.
+- Does **not** send `HTTP-Referer` / `X-Title` attribution headers — your
+  usage stays off OpenRouter's public leaderboard.
+
+Provider routing knobs:
+
+| Flag | Effect |
+|------|--------|
+| `--no-data-collection` | only route to providers that don't log/train on prompts |
+| `--no-fallbacks`       | fail rather than silently route to a fallback provider |
+| `--openrouter-provider-json '{...}'` | splice raw JSON into the request `provider` object (overrides the flags above) |
+
+## Reasoning
+
+`--reasoning low|medium|high` (default `off`) sends a `reasoning: {effort: ...}`
+hint on requests to reasoning-capable models (Anthropic extended thinking,
+OpenAI o-series, DeepSeek-R1, …). To keep token spend bounded, lambda only
+sends the reasoning hint on the first model turn after each user message
+(the planning turn); follow-up turns that just process tool results omit it.
+See `docs/adr/0002-reasoning-policy.md` for the rationale.
 
 ## Layout
 

@@ -39,6 +39,12 @@ type (
 	EventContextUsage  struct{ Used, Limit int }
 	EventTurnDone      struct{ Reason string }
 	EventError         struct{ Err error }
+	// EventCost reports per-call USD spend and the running session total.
+	// Emitted after each completion when the provider reports cost (>0).
+	EventCost struct {
+		Turn    float64
+		Session float64
+	}
 )
 
 func (EventContentDelta) isEvent()  {}
@@ -50,17 +56,21 @@ func (EventToolDenied) isEvent()    {}
 func (EventContextUsage) isEvent()  {}
 func (EventTurnDone) isEvent()      {}
 func (EventError) isEvent()         {}
+func (EventCost) isEvent()          {}
 
 // Agent is the main tool-calling loop. It is not safe for concurrent use —
 // one turn at a time per agent.
 type Agent struct {
-	completer ai.Completer
-	model     string
-	registry  tools.Registry
-	tools     []ai.ToolSpec
-	history   *history
-	maxSteps  int
-	approver  *Approver
+	completer       ai.Completer
+	model           string
+	registry        tools.Registry
+	tools           []ai.ToolSpec
+	history         *history
+	maxSteps        int
+	approver        *Approver
+	reasoningEffort ai.ReasoningEffort
+	providerCfg     ai.ProviderConfig
+	sessionCost     float64
 
 	logger *Logger // nil when --debug is off
 }
@@ -73,22 +83,30 @@ type Agent struct {
 // takes ownership of logger and closes it via Close.
 func New(cfg *config.Config, systemPrompt string, registry tools.Registry, approver *Approver, logger *Logger) *Agent {
 	a := &Agent{
-		completer: ai.NewOpenAICompleter(cfg.BaseURL, cfg.APIKey, !cfg.NoStream),
-		model:     cfg.Model,
-		registry:  registry,
-		tools:     registry.Schemas(),
-		history:   newHistory(systemPrompt, cfg.MaxContextTokens),
-		maxSteps:  cfg.MaxSteps,
-		approver:  approver,
-		logger:    logger,
+		completer:       ai.NewOpenAICompleter(cfg.Provider, cfg.BaseURL, cfg.APIKey, !cfg.NoStream),
+		model:           cfg.Model,
+		registry:        registry,
+		tools:           registry.Schemas(),
+		history:         newHistory(systemPrompt, cfg.MaxContextTokens),
+		maxSteps:        cfg.MaxSteps,
+		approver:        approver,
+		reasoningEffort: cfg.Reasoning,
+		providerCfg: ai.ProviderConfig{
+			DenyDataCollection: cfg.DenyDataCollection,
+			NoFallbacks:        cfg.NoFallbacks,
+			RawJSON:            cfg.OpenRouterProviderJSON,
+		},
+		logger: logger,
 	}
 	if logger != nil {
 		logger.Write("session_start", map[string]any{
+			"provider":           string(cfg.Provider),
 			"model":              cfg.Model,
 			"base_url":           cfg.BaseURL,
 			"max_steps":          cfg.MaxSteps,
 			"max_context_tokens": cfg.MaxContextTokens,
 			"streaming":          !cfg.NoStream,
+			"reasoning":          string(cfg.Reasoning),
 		})
 	}
 	return a
@@ -113,6 +131,7 @@ func (a *Agent) Close() error {
 func (a *Agent) Reset() {
 	a.history.reset()
 	a.approver.Reset()
+	a.sessionCost = 0
 }
 
 // Run executes one user turn: append the user message, then loop requesting
@@ -126,7 +145,14 @@ func (a *Agent) Run(ctx context.Context, userInput string, out chan<- Event) {
 	a.logger.Write("turn_start", map[string]any{"input_chars": len(userInput)})
 
 	for step := 0; step < a.maxSteps; step++ {
-		assistant, err := a.completeOne(ctx, out)
+		// Planning-only reasoning policy: only the first turn after the user
+		// message reasons; tool-result follow-ups send no reasoning. See
+		// docs/adr/0002-reasoning-policy.md.
+		effort := ai.ReasoningOff
+		if step == 0 {
+			effort = a.reasoningEffort
+		}
+		assistant, err := a.completeOne(ctx, effort, out)
 		if err != nil {
 			// On ctx cancellation the TUI drives a close-channel signal; don't
 			// surface the wrapped-context error as an EventError.
@@ -160,16 +186,18 @@ func (a *Agent) Run(ctx context.Context, userInput string, out chan<- Event) {
 // completeOne issues one completion request via the Completer and returns the
 // assistant message to append to the history. The completer's content/reasoning
 // callbacks are wired straight into the agent's event channel.
-func (a *Agent) completeOne(ctx context.Context, out chan<- Event) (ai.Message, error) {
+func (a *Agent) completeOne(ctx context.Context, effort ai.ReasoningEffort, out chan<- Event) (ai.Message, error) {
 	a.compactIfNeeded(ctx, out)
 	// Snapshot the char count of the exact message set we're sending; pairs
 	// with prompt_tokens in the response to calibrate charsPerToken.
 	charsSent := a.history.totalChars()
 
 	req := ai.CompletionRequest{
-		Model:    a.model,
-		Messages: a.history.messages,
-		Tools:    a.tools,
+		Model:     a.model,
+		Messages:  a.history.messages,
+		Tools:     a.tools,
+		Reasoning: effort,
+		Provider:  a.providerCfg,
 	}
 
 	a.logger.Write("request", map[string]any{
@@ -195,7 +223,11 @@ func (a *Agent) completeOne(ctx context.Context, out chan<- Event) (ai.Message, 
 
 	a.history.recordTokenUsage(charsSent, res.PromptTokens)
 	a.emitContextUsage(ctx, out)
-	a.logResponse(res.FinishReason, res.Message.Content, res.Reasoning, len(res.Message.ToolCalls), res.PromptTokens, res.CompletionTokens)
+	if res.Cost > 0 {
+		a.sessionCost += res.Cost
+		a.emit(ctx, out, EventCost{Turn: res.Cost, Session: a.sessionCost})
+	}
+	a.logResponse(res.FinishReason, res.Message.Content, res.Reasoning, len(res.Message.ToolCalls), res.PromptTokens, res.CompletionTokens, res.Cost)
 	if res.Message.Content != "" {
 		a.emit(ctx, out, EventAssistantDone{Text: res.Message.Content})
 	}
@@ -205,7 +237,7 @@ func (a *Agent) completeOne(ctx context.Context, out chan<- Event) (ai.Message, 
 // logResponse records one model completion to the debug log. Bodies are
 // truncated by truncBody so the log stays bounded for huge replies; the full
 // size is preserved in the *_chars fields.
-func (a *Agent) logResponse(finishReason, content, reasoning string, toolCalls int, promptTokens, completionTokens int64) {
+func (a *Agent) logResponse(finishReason, content, reasoning string, toolCalls int, promptTokens, completionTokens int64, cost float64) {
 	if a.logger == nil {
 		return
 	}
@@ -218,6 +250,7 @@ func (a *Agent) logResponse(finishReason, content, reasoning string, toolCalls i
 		"tool_call_count":   toolCalls,
 		"prompt_tokens":     promptTokens,
 		"completion_tokens": completionTokens,
+		"cost_usd":          cost,
 	})
 }
 

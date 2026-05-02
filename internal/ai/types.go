@@ -81,10 +81,34 @@ type ToolSpec struct {
 	Parameters  map[string]any
 }
 
+// ReasoningEffort is a per-request hint to reasoning-capable models for how
+// much hidden chain-of-thought to spend. ReasoningOff omits the field entirely
+// (the wire default for non-reasoning models).
+type ReasoningEffort string
+
+const (
+	ReasoningOff    ReasoningEffort = ""
+	ReasoningLow    ReasoningEffort = "low"
+	ReasoningMedium ReasoningEffort = "medium"
+	ReasoningHigh   ReasoningEffort = "high"
+)
+
+// ProviderConfig carries OpenRouter-specific routing preferences. Empty fields
+// are omitted from the request. Non-OpenRouter providers ignore the value.
+type ProviderConfig struct {
+	DenyDataCollection bool
+	NoFallbacks        bool
+	// RawJSON, when non-empty, is spliced verbatim into the request as the
+	// "provider" object. Takes precedence over the structured fields above.
+	RawJSON string
+}
+
 type CompletionRequest struct {
-	Model    string
-	Messages []Message
-	Tools    []ToolSpec
+	Model     string
+	Messages  []Message
+	Tools     []ToolSpec
+	Reasoning ReasoningEffort
+	Provider  ProviderConfig
 }
 
 type CompletionResult struct {
@@ -93,6 +117,9 @@ type CompletionResult struct {
 	FinishReason     string
 	PromptTokens     int64
 	CompletionTokens int64
+	// Cost is the per-call USD spend reported by the provider. Zero when the
+	// provider does not report cost (every backend except OpenRouter today).
+	Cost float64
 }
 
 // Completer hides everything between "ask the model for a completion" and

@@ -47,9 +47,12 @@ func runOneShot(ctx context.Context, cfg *config.Config, systemPrompt string, re
 		return s
 	}
 
+	var sessionCost float64
 	exitCode := 0
 	for ev := range events {
 		switch e := ev.(type) {
+		case agent.EventCost:
+			sessionCost = e.Session
 		case agent.EventContentDelta:
 			fmt.Fprint(os.Stdout, e.Text)
 		case agent.EventThinkingDelta:
@@ -80,6 +83,9 @@ func runOneShot(ctx context.Context, cfg *config.Config, systemPrompt string, re
 			fmt.Fprintln(os.Stderr, "error:", e.Err)
 			exitCode = 1
 		}
+	}
+	if sessionCost > 0 {
+		fmt.Fprintf(os.Stderr, "cost: $%.4f\n", sessionCost)
 	}
 	// SIGINT/SIGTERM came in during the turn — use the conventional 130.
 	if errors.Is(ctx.Err(), context.Canceled) {

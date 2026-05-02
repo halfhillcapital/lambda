@@ -42,6 +42,9 @@ type transcriptEventResult struct {
 	tokenUsed      int
 	tokenCap       int
 	hasTokenUsage  bool
+	turnCost       float64 // per-completion cost, accumulated by the caller
+	sessionCost    float64 // running session total reported by the agent
+	hasCost        bool
 }
 
 func newTranscript(summarize func(name, rawArgs string) string) *transcript {
@@ -127,6 +130,10 @@ func (t *transcript) ApplyAgentEvent(ev agent.Event) transcriptEventResult {
 	case agent.EventContextUsage:
 		result.tokenUsed, result.tokenCap = e.Used, e.Limit
 		result.hasTokenUsage = true
+	case agent.EventCost:
+		result.turnCost = e.Turn
+		result.sessionCost = e.Session
+		result.hasCost = true
 	case agent.EventTurnDone:
 		t.FinalizeOpenThinking()
 		result.turnDone = true

@@ -23,10 +23,13 @@ import (
 // openAICompleter is the production Completer: it talks HTTP to any
 // OpenAI-compatible chat-completions endpoint, retries transient errors,
 // stitches streaming chunks via the SDK accumulator, and humanizes the
-// transport-layer errors callers will see.
+// transport-layer errors callers will see. The provider field switches small
+// per-backend deltas (request shaping, cost extraction) without forking the
+// type — every backend lambda supports today is OpenAI-compatible.
 type openAICompleter struct {
-	client openai.Client
-	stream bool
+	client   openai.Client
+	stream   bool
+	provider Provider
 }
 
 // NewOpenAICompleter constructs a Completer against the given endpoint. When
@@ -34,7 +37,7 @@ type openAICompleter struct {
 // final usage chunk; when false, it issues a non-streaming request. Local
 // inference frameworks that ignore include_usage just leave the calibration
 // pinned to its previous value — no failure mode.
-func NewOpenAICompleter(baseURL, apiKey string, stream bool) Completer {
+func NewOpenAICompleter(provider Provider, baseURL, apiKey string, stream bool) Completer {
 	// MaxRetries(0) disables the SDK's retry loop; withTransientRetry below is
 	// the canonical retry layer (classifies errors, surfaces failures to the
 	// caller, honours ctx cancellation during backoff).
@@ -44,7 +47,7 @@ func NewOpenAICompleter(baseURL, apiKey string, stream bool) Completer {
 		option.WithHTTPClient(newHTTPClient()),
 		option.WithMaxRetries(0),
 	)
-	return &openAICompleter{client: client, stream: stream}
+	return &openAICompleter{client: client, stream: stream, provider: provider}
 }
 
 // ErrNoChoices is returned by Complete when the response has zero choices.
@@ -59,22 +62,51 @@ func (c *openAICompleter) Complete(
 	onReasoning func(string),
 ) (CompletionResult, error) {
 	params := openAIParams(req)
+	opts, err := c.requestOptions(req)
+	if err != nil {
+		return CompletionResult{}, err
+	}
 	if c.stream {
 		params.StreamOptions = openai.ChatCompletionStreamOptionsParam{
 			IncludeUsage: param.NewOpt(true),
 		}
-		return c.completeStreaming(ctx, params, onContent, onReasoning)
+		return c.completeStreaming(ctx, params, opts, onContent, onReasoning)
 	}
-	return c.completeNonStreaming(ctx, params, onReasoning)
+	return c.completeNonStreaming(ctx, params, opts, onReasoning)
+}
+
+// requestOptions assembles the per-request options that splice provider-
+// specific fields into the JSON body. Returns nil opts and nil error when
+// nothing needs splicing (the common path for plain openai-compat).
+func (c *openAICompleter) requestOptions(req CompletionRequest) ([]option.RequestOption, error) {
+	var opts []option.RequestOption
+	if req.Reasoning != ReasoningOff {
+		opts = append(opts, option.WithJSONSet("reasoning", map[string]any{
+			"effort": string(req.Reasoning),
+		}))
+	}
+	if c.provider == ProviderOpenRouter {
+		// Always opt in to detailed usage so cost is reported on every call.
+		opts = append(opts, option.WithJSONSet("usage", map[string]any{"include": true}))
+		obj, err := openRouterProviderObject(req.Provider)
+		if err != nil {
+			return nil, err
+		}
+		if obj != nil {
+			opts = append(opts, option.WithJSONSet("provider", obj))
+		}
+	}
+	return opts, nil
 }
 
 func (c *openAICompleter) completeNonStreaming(
 	ctx context.Context,
 	params openai.ChatCompletionNewParams,
+	opts []option.RequestOption,
 	onReasoning func(string),
 ) (CompletionResult, error) {
 	comp, err := withTransientRetry(ctx, func() (*openai.ChatCompletion, error) {
-		return c.client.Chat.Completions.New(ctx, params)
+		return c.client.Chat.Completions.New(ctx, params, opts...)
 	})
 	if err != nil {
 		return CompletionResult{}, humanizeError(err)
@@ -93,19 +125,21 @@ func (c *openAICompleter) completeNonStreaming(
 		FinishReason:     comp.Choices[0].FinishReason,
 		PromptTokens:     comp.Usage.PromptTokens,
 		CompletionTokens: comp.Usage.CompletionTokens,
+		Cost:             c.costFrom(comp.Usage.JSON.ExtraFields),
 	}, nil
 }
 
 func (c *openAICompleter) completeStreaming(
 	ctx context.Context,
 	params openai.ChatCompletionNewParams,
+	opts []option.RequestOption,
 	onContent, onReasoning func(string),
 ) (CompletionResult, error) {
 	var (
 		acc       openai.ChatCompletionAccumulator
 		reasoning strings.Builder
 	)
-	stream := c.client.Chat.Completions.NewStreaming(ctx, params)
+	stream := c.client.Chat.Completions.NewStreaming(ctx, params, opts...)
 	for stream.Next() {
 		chunk := stream.Current()
 		acc.AddChunk(chunk)
@@ -135,7 +169,17 @@ func (c *openAICompleter) completeStreaming(
 		FinishReason:     acc.Choices[0].FinishReason,
 		PromptTokens:     acc.Usage.PromptTokens,
 		CompletionTokens: acc.Usage.CompletionTokens,
+		Cost:             c.costFrom(acc.Usage.JSON.ExtraFields),
 	}, nil
+}
+
+// costFrom reads usage.cost only for providers that report it. Avoids a stray
+// scan on every plain openai-compat response.
+func (c *openAICompleter) costFrom(extras map[string]respjson.Field) float64 {
+	if c.provider != ProviderOpenRouter {
+		return 0
+	}
+	return extractCost(extras)
 }
 
 func openAIParams(req CompletionRequest) openai.ChatCompletionNewParams {
