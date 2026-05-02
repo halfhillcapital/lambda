@@ -31,6 +31,10 @@ _Avoid_: Reasoning mode, thinking strategy.
 **Cost**:
 Per-call USD spend, read from `usage.cost` on responses that carry it (currently OpenRouter only). Zero when the provider doesn't report it; lambda does not compute cost from a price table.
 
+**Project context**:
+User-authored guidance loaded from `AGENTS.md` (or `CLAUDE.md` as a fallback) and spliced into the system prompt. Discovered by walking up from cwd to the first `.git` ancestor. Disabled with `--no-project-context`. Distinct from skills (markdown packs loaded on demand) and from the `<environment>` block (cwd, OS, git status — derived, not authored).
+_Avoid_: Memory, instructions, rules.
+
 ## Relationships
 
 - A user message starts one **Round**; the **Round** contains one or more **Turns**.

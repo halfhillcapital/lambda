@@ -26,6 +26,10 @@ type uiModel struct {
 	agent   *agent.Agent
 	session *worktree.Session
 	askCh   chan confirmRequest
+	// rebuildSystemPrompt re-renders the system prompt from scratch, picking
+	// up edits to AGENTS.md / CLAUDE.md. Called on /new and /clear so a user
+	// iterating on project guidance doesn't have to restart lambda.
+	rebuildSystemPrompt func() string
 
 	commands     slashCommandDispatcher
 	turn         *turnRunner
@@ -55,15 +59,16 @@ type uiModel struct {
 	inputRows int
 }
 
-func newUIModel(cfg *config.Config, systemPrompt string, registry tools.Registry, skillIdx *skills.Index, session *worktree.Session) (*uiModel, error) {
+func newUIModel(cfg *config.Config, systemPrompt string, rebuildSystemPrompt func() string, registry tools.Registry, skillIdx *skills.Index, session *worktree.Session) (*uiModel, error) {
 	if skillIdx == nil {
 		skillIdx = skills.Empty()
 	}
 	m := &uiModel{
-		cfg:      cfg,
-		session:  session,
-		askCh:    make(chan confirmRequest, 1),
-		commands: newSlashCommandDispatcher(skillIdx),
+		cfg:                 cfg,
+		session:             session,
+		askCh:               make(chan confirmRequest, 1),
+		commands:            newSlashCommandDispatcher(skillIdx),
+		rebuildSystemPrompt: rebuildSystemPrompt,
 	}
 	m.transcript = newTranscript(func(name, rawArgs string) string {
 		return registry.Summarize(name, rawArgs)
@@ -295,8 +300,8 @@ func cropLines(s string, n int) string {
 // returns the user's keep/discard choice for the worktree session. The
 // returned action is ActionKeep when the user never reaches the quit
 // modal (e.g. clean session, or worktree disabled).
-func Run(ctx context.Context, cfg *config.Config, systemPrompt string, registry tools.Registry, skillIdx *skills.Index, session *worktree.Session) (worktree.Action, error) {
-	m, err := newUIModel(cfg, systemPrompt, registry, skillIdx, session)
+func Run(ctx context.Context, cfg *config.Config, systemPrompt string, rebuildSystemPrompt func() string, registry tools.Registry, skillIdx *skills.Index, session *worktree.Session) (worktree.Action, error) {
+	m, err := newUIModel(cfg, systemPrompt, rebuildSystemPrompt, registry, skillIdx, session)
 	if err != nil {
 		return worktree.ActionKeep, err
 	}

@@ -54,6 +54,14 @@ func (h *history) reset() {
 	h.elisionNoteIdx = 0
 }
 
+// resetWithSystemPrompt is reset() but with a freshly-rebuilt system prompt.
+// Used so /new can pick up edits to project-context files (AGENTS.md, CLAUDE.md).
+func (h *history) resetWithSystemPrompt(newPrompt string) {
+	h.messages = []ai.Message{ai.SystemMessage(newPrompt)}
+	h.droppedTurns = 0
+	h.elisionNoteIdx = 0
+}
+
 // compactIfNeeded drops oldest turns until the estimated prompt-token count
 // fits inside maxContextTokens, preserving leading system messages and at
 // least the most recent turn. A single system note records how many turns

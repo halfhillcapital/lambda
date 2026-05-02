@@ -134,6 +134,15 @@ func (a *Agent) Reset() {
 	a.sessionCost = 0
 }
 
+// ResetWithSystemPrompt is Reset, but also replaces the system prompt with
+// newPrompt. Used by /new so an edit to AGENTS.md / CLAUDE.md takes effect on
+// the next conversation without restarting lambda.
+func (a *Agent) ResetWithSystemPrompt(newPrompt string) {
+	a.history.resetWithSystemPrompt(newPrompt)
+	a.approver.Reset()
+	a.sessionCost = 0
+}
+
 // Run executes one user turn: append the user message, then loop requesting
 // completions and executing tool calls until the model stops calling tools
 // or the iteration cap is hit. Events are written to out; out is closed when

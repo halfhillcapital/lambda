@@ -175,7 +175,11 @@ func (m *uiModel) handleSlashCommand(text string) tea.Cmd {
 	result := m.commands.Dispatch(text)
 	switch result.kind {
 	case slashCommandReset:
-		m.agent.Reset()
+		if m.rebuildSystemPrompt != nil {
+			m.agent.ResetWithSystemPrompt(m.rebuildSystemPrompt())
+		} else {
+			m.agent.Reset()
+		}
 		m.transcript.Reset()
 		m.turnCost = 0
 		m.sessionCost = 0

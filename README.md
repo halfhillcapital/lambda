@@ -13,6 +13,12 @@ A minimal CLI coding agent for local LLMs via any OpenAI-compatible endpoint
   require per-call confirmation (or `--yolo`).
 - **Skills**: markdown instructions in `~/.claude/skills/` or `./.claude/skills/` are listed in the system prompt
   and loaded on demand via the `skill` tool. See `docs/agents/skills.md`.
+- **Project context**: at startup, lambda walks up from the cwd to the first
+  `.git` ancestor and loads `AGENTS.md` (or `CLAUDE.md` as a fallback) from
+  the nearest directory that has one. The contents are spliced into the
+  system prompt verbatim, capped at 8 KiB (tail-truncated). Re-read on `/new`
+  / `/clear` so edits take effect mid-session. Disable with
+  `--no-project-context`.
 - **REPL slash commands**: `/new` (or `/clear`) to start a fresh conversation,
   `/help` for the list. Anything starting with `/` is treated as a command.
 - **History compaction**: long REPL sessions stay under a soft prompt-token

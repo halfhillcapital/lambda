@@ -3,6 +3,7 @@ package prompt
 import (
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -21,9 +22,12 @@ Guidelines:
 - When you're done with the task, stop calling tools and give a one-line answer.`
 
 // Build assembles the system prompt, embedding environment context (cwd, OS,
-// git status) and a listing of available skills. skillIdx may be nil or empty;
-// the skills block is omitted when no skills are loaded.
-func Build(cwd string, skillIdx *skills.Index) string {
+// git status), any user-authored project guidance loaded from AGENTS.md /
+// CLAUDE.md, and a listing of available skills. skillIdx may be nil or empty;
+// the skills block is omitted when no skills are loaded. project is the
+// zero Loaded{} when project-context loading is disabled or no file was
+// found, in which case the project block is omitted.
+func Build(cwd string, skillIdx *skills.Index, project ProjectContext) string {
 	var uname, gitStatus string
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -43,12 +47,36 @@ func Build(cwd string, skillIdx *skills.Index) string {
 		fmt.Fprintf(&b, "git:\n%s\n", indent(truncateLines(gitStatus, 40), "  "))
 	}
 	b.WriteString("</environment>")
+	if block := projectBlock(project); block != "" {
+		b.WriteString("\n\n")
+		b.WriteString(block)
+	}
 	if block := skillsBlock(skillIdx); block != "" {
 		b.WriteString("\n\n")
 		b.WriteString(block)
 	}
 	return b.String()
 }
+
+// projectBlock renders the AGENTS.md / CLAUDE.md payload as a labeled
+// markdown section. Returns "" when nothing was loaded. The intro names the
+// actual filename (AGENTS.md or CLAUDE.md) and absolute path so the model
+// knows the provenance of the rules it is about to read.
+func projectBlock(p ProjectContext) string {
+	if p.None() {
+		return ""
+	}
+	name := filepath.Base(p.Path)
+	var b strings.Builder
+	b.WriteString("## Project instructions\n\n")
+	fmt.Fprintf(&b, "The following were loaded from %s at %s. Treat them as user-authored guidance for this project.\n\n", name, p.Path)
+	b.WriteString(p.Content)
+	if p.Truncated {
+		fmt.Fprintf(&b, "\n\n… (truncated; %d of %d bytes shown)", len(p.Content), p.OriginalSize)
+	}
+	return b.String()
+}
+
 
 // skillsBlock renders the available-skills listing (name + description) for
 // inclusion in the system prompt. Returns "" when no skills are loaded so the
