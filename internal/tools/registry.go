@@ -67,6 +67,28 @@ func (r Registry) Schemas() []ai.ToolSpec {
 	return out
 }
 
+// SchemaChars returns the JSON-marshalled byte total of every tool's schema
+// (name, description, parameters). Used by /context to estimate how many
+// prompt tokens the tool definitions consume on every request. The exact
+// wire encoding varies per provider, but the relative size dominates the
+// difference, so this is good enough for a debug breakdown.
+func (r Registry) SchemaChars() int {
+	n := 0
+	for _, t := range r {
+		s := t.Schema()
+		b, err := json.Marshal(struct {
+			Name        string         `json:"name"`
+			Description string         `json:"description"`
+			Parameters  map[string]any `json:"parameters"`
+		}{s.Name, s.Description, s.Parameters})
+		if err != nil {
+			continue
+		}
+		n += len(b)
+	}
+	return n
+}
+
 // Execute dispatches a tool call by name. rawArgs is the raw JSON string
 // from the model. Errors are encoded in the result string with a
 // "schema error:" or "error:" prefix so the model can recover.

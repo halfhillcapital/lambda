@@ -60,14 +60,14 @@ func run() int {
 	}
 
 	skillIdx := skills.Load(skills.RootsFromEnv(session.Cwd(), os.Getenv("LAMBDA_SKILLS_DIR")), os.Stderr)
-	buildPrompt := func() string {
+	buildSections := func() prompt.Sections {
 		var pc prompt.ProjectContext
 		if !cfg.NoProjectContext {
 			pc = prompt.LoadProjectContext(session.Cwd(), os.Stderr)
 		}
-		return prompt.Build(session.Cwd(), skillIdx, pc)
+		return prompt.BuildSections(session.Cwd(), skillIdx, pc)
 	}
-	systemPrompt := buildPrompt()
+	systemPrompt := buildSections().Joined()
 	registry := tools.New(session.Cwd(), skillIdx)
 
 	if p, ok := resolveOneShotPrompt(cfg); ok {
@@ -79,7 +79,7 @@ func run() int {
 		return 2
 	}
 
-	action, err := tui.Run(ctx, cfg, systemPrompt, buildPrompt, registry, skillIdx, session)
+	action, err := tui.Run(ctx, cfg, systemPrompt, buildSections, registry, skillIdx, session)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1

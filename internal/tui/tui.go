@@ -14,6 +14,7 @@ import (
 
 	"lambda/internal/agent"
 	"lambda/internal/config"
+	"lambda/internal/prompt"
 	"lambda/internal/skills"
 	"lambda/internal/tools"
 	"lambda/internal/worktree"
@@ -22,14 +23,16 @@ import (
 // --- model ---
 
 type uiModel struct {
-	cfg     *config.Config
-	agent   *agent.Agent
-	session *worktree.Session
-	askCh   chan confirmRequest
-	// rebuildSystemPrompt re-renders the system prompt from scratch, picking
-	// up edits to AGENTS.md / CLAUDE.md. Called on /new and /clear so a user
-	// iterating on project guidance doesn't have to restart lambda.
-	rebuildSystemPrompt func() string
+	cfg      *config.Config
+	agent    *agent.Agent
+	session  *worktree.Session
+	registry tools.Registry
+	askCh    chan confirmRequest
+	// rebuildSections re-renders the system prompt from scratch as discrete
+	// chunks, picking up edits to AGENTS.md / CLAUDE.md. Called on /new and
+	// /clear (joined back into a string) and on /context (used directly to
+	// attribute tokens per chunk).
+	rebuildSections func() prompt.Sections
 
 	commands     slashCommandDispatcher
 	turn         *turnRunner
@@ -59,16 +62,17 @@ type uiModel struct {
 	inputRows int
 }
 
-func newUIModel(cfg *config.Config, systemPrompt string, rebuildSystemPrompt func() string, registry tools.Registry, skillIdx *skills.Index, session *worktree.Session) (*uiModel, error) {
+func newUIModel(cfg *config.Config, systemPrompt string, rebuildSections func() prompt.Sections, registry tools.Registry, skillIdx *skills.Index, session *worktree.Session) (*uiModel, error) {
 	if skillIdx == nil {
 		skillIdx = skills.Empty()
 	}
 	m := &uiModel{
-		cfg:                 cfg,
-		session:             session,
-		askCh:               make(chan confirmRequest, 1),
-		commands:            newSlashCommandDispatcher(skillIdx),
-		rebuildSystemPrompt: rebuildSystemPrompt,
+		cfg:             cfg,
+		session:         session,
+		registry:        registry,
+		askCh:           make(chan confirmRequest, 1),
+		commands:        newSlashCommandDispatcher(skillIdx),
+		rebuildSections: rebuildSections,
 	}
 	m.transcript = newTranscript(func(name, rawArgs string) string {
 		return registry.Summarize(name, rawArgs)
@@ -300,8 +304,8 @@ func cropLines(s string, n int) string {
 // returns the user's keep/discard choice for the worktree session. The
 // returned action is ActionKeep when the user never reaches the quit
 // modal (e.g. clean session, or worktree disabled).
-func Run(ctx context.Context, cfg *config.Config, systemPrompt string, rebuildSystemPrompt func() string, registry tools.Registry, skillIdx *skills.Index, session *worktree.Session) (worktree.Action, error) {
-	m, err := newUIModel(cfg, systemPrompt, rebuildSystemPrompt, registry, skillIdx, session)
+func Run(ctx context.Context, cfg *config.Config, systemPrompt string, rebuildSections func() prompt.Sections, registry tools.Registry, skillIdx *skills.Index, session *worktree.Session) (worktree.Action, error) {
+	m, err := newUIModel(cfg, systemPrompt, rebuildSections, registry, skillIdx, session)
 	if err != nil {
 		return worktree.ActionKeep, err
 	}

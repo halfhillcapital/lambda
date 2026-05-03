@@ -55,6 +55,14 @@ func TestSlashCommandDispatcher_SkillStartsTurn(t *testing.T) {
 	}
 }
 
+func TestSlashCommandDispatcher_Context(t *testing.T) {
+	dispatcher := newSlashCommandDispatcher(skills.Empty())
+	result := dispatcher.Dispatch("/context")
+	if result.kind != slashCommandShowContext {
+		t.Fatalf("kind=%v, want show context", result.kind)
+	}
+}
+
 func TestSlashCommandDispatcher_BuiltinsWinOverSkills(t *testing.T) {
 	dispatcher := newSlashCommandDispatcher(testSkillIndex(t))
 

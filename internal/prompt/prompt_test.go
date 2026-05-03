@@ -59,6 +59,27 @@ func TestBuild_TruncationNote(t *testing.T) {
 	}
 }
 
+func TestBuildSections_JoinedMatchesBuild(t *testing.T) {
+	pc := ProjectContext{Path: "/repo/AGENTS.md", Content: "rules", OriginalSize: 5}
+	cwd := t.TempDir()
+	if got, want := BuildSections(cwd, nil, pc).Joined(), Build(cwd, nil, pc); got != want {
+		t.Errorf("BuildSections().Joined() != Build():\n--got--\n%s\n--want--\n%s", got, want)
+	}
+}
+
+func TestBuildSections_OmitsEmptyChunks(t *testing.T) {
+	s := BuildSections(t.TempDir(), nil, ProjectContext{})
+	if s.Project != "" {
+		t.Errorf("project chunk should be empty when none loaded; got %q", s.Project)
+	}
+	if s.Skills != "" {
+		t.Errorf("skills chunk should be empty when no skills; got %q", s.Skills)
+	}
+	if s.Base == "" || s.Environment == "" {
+		t.Errorf("base/environment must always be present; base=%q env=%q", s.Base, s.Environment)
+	}
+}
+
 func TestBuild_ProjectBlockBeforeSkillsBlock(t *testing.T) {
 	pc := ProjectContext{Path: "/x/AGENTS.md", Content: "rules"}
 	got := Build(t.TempDir(), nil, pc)

@@ -120,6 +120,74 @@ func (a *Agent) ContextUsage() (used, limit int) {
 	return a.history.estimateTokens(), a.history.maxContextTokens
 }
 
+// ContextSnapshot summarises the current message history for debugging UIs
+// (the /context REPL command). Char counts are JSON-marshalled lengths —
+// the same units estimateTokens divides by CharsPerToken. The "system"
+// counts cover the very first system message (the original system prompt);
+// any elision note inserted by compaction is accounted for separately.
+type ContextSnapshot struct {
+	SystemPromptChars int
+	ElisionNoteChars  int
+	UserChars         int
+	UserMsgs          int
+	AssistantChars    int
+	AssistantMsgs     int
+	ToolChars         int
+	ToolMsgs          int
+	TotalChars        int
+	EstimatedTokens   int
+	MaxContextTokens  int
+	CharsPerToken     float64
+	Calibrated        bool
+}
+
+// ContextSnapshot returns a per-role breakdown of the current history plus
+// the calibration ratio used for token estimates. Calibrated is true once
+// the server has reported prompt_tokens at least once; before that, the
+// default ratio (defaultCharsPerToken) is reported and Calibrated is false.
+func (a *Agent) ContextSnapshot() ContextSnapshot {
+	h := a.history
+	snap := ContextSnapshot{
+		EstimatedTokens:  h.estimateTokens(),
+		MaxContextTokens: h.maxContextTokens,
+		CharsPerToken:    h.charsPerToken,
+		Calibrated:       h.charsPerToken > 0,
+	}
+	if !snap.Calibrated {
+		snap.CharsPerToken = defaultCharsPerToken
+	}
+	for i, m := range h.messages {
+		size := messageChars(m)
+		snap.TotalChars += size
+		switch m.Role {
+		case ai.RoleSystem:
+			if i == 0 {
+				snap.SystemPromptChars = size
+			} else {
+				snap.ElisionNoteChars += size
+			}
+		case ai.RoleUser:
+			snap.UserChars += size
+			snap.UserMsgs++
+		case ai.RoleAssistant:
+			snap.AssistantChars += size
+			snap.AssistantMsgs++
+		case ai.RoleTool:
+			snap.ToolChars += size
+			snap.ToolMsgs++
+		}
+	}
+	return snap
+}
+
+func messageChars(m ai.Message) int {
+	b, err := m.MarshalJSON()
+	if err != nil {
+		return 0
+	}
+	return len(b)
+}
+
 // Close releases agent-owned resources (currently the debug log file).
 func (a *Agent) Close() error {
 	return a.logger.Close()

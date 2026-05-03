@@ -175,8 +175,8 @@ func (m *uiModel) handleSlashCommand(text string) tea.Cmd {
 	result := m.commands.Dispatch(text)
 	switch result.kind {
 	case slashCommandReset:
-		if m.rebuildSystemPrompt != nil {
-			m.agent.ResetWithSystemPrompt(m.rebuildSystemPrompt())
+		if m.rebuildSections != nil {
+			m.agent.ResetWithSystemPrompt(m.rebuildSections().Joined())
 		} else {
 			m.agent.Reset()
 		}
@@ -193,6 +193,9 @@ func (m *uiModel) handleSlashCommand(text string) tea.Cmd {
 			m.transcript.AppendNotice(notice)
 		}
 		m.refreshViewport()
+		return nil
+	case slashCommandShowContext:
+		m.showContext()
 		return nil
 	case slashCommandStartTurn:
 		return m.startTurn(result.startInput)

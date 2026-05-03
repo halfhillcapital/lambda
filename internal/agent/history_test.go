@@ -399,6 +399,70 @@ func TestReset(t *testing.T) {
 	}
 }
 
+func TestContextSnapshotPerRoleAggregation(t *testing.T) {
+	a := &Agent{history: &history{
+		messages: []ai.Message{
+			ai.SystemMessage("system prompt body"),
+			ai.UserMessage("hello"),
+			makeAssistant("hi there"),
+			ai.ToolMessage("tool result", "id1"),
+			ai.UserMessage("another"),
+		},
+		maxContextTokens: 8000,
+	}}
+	snap := a.ContextSnapshot()
+	if snap.SystemPromptChars == 0 {
+		t.Errorf("SystemPromptChars=0; want >0")
+	}
+	if snap.UserMsgs != 2 {
+		t.Errorf("UserMsgs=%d, want 2", snap.UserMsgs)
+	}
+	if snap.AssistantMsgs != 1 {
+		t.Errorf("AssistantMsgs=%d, want 1", snap.AssistantMsgs)
+	}
+	if snap.ToolMsgs != 1 {
+		t.Errorf("ToolMsgs=%d, want 1", snap.ToolMsgs)
+	}
+	if snap.MaxContextTokens != 8000 {
+		t.Errorf("MaxContextTokens=%d, want 8000", snap.MaxContextTokens)
+	}
+	if snap.Calibrated {
+		t.Errorf("Calibrated=true before any usage recorded")
+	}
+	if snap.CharsPerToken != defaultCharsPerToken {
+		t.Errorf("CharsPerToken=%v, want %v (default)", snap.CharsPerToken, defaultCharsPerToken)
+	}
+}
+
+func TestContextSnapshotCalibrationFlag(t *testing.T) {
+	a := &Agent{history: &history{
+		messages: []ai.Message{ai.SystemMessage("x")},
+	}}
+	a.history.recordTokenUsage(800, 200) // 4.0
+	snap := a.ContextSnapshot()
+	if !snap.Calibrated {
+		t.Errorf("Calibrated=false after recordTokenUsage; want true")
+	}
+	if snap.CharsPerToken != 4.0 {
+		t.Errorf("CharsPerToken=%v, want 4.0", snap.CharsPerToken)
+	}
+}
+
+func TestContextSnapshotElisionNoteSeparate(t *testing.T) {
+	a := &Agent{history: &history{
+		messages: []ai.Message{
+			ai.SystemMessage("real system prompt"),
+			ai.SystemMessage("[note: 3 earlier turn(s) omitted]"),
+			ai.UserMessage("hi"),
+		},
+	}}
+	snap := a.ContextSnapshot()
+	if snap.SystemPromptChars == 0 || snap.ElisionNoteChars == 0 {
+		t.Errorf("expected both system prompt and elision note chars; got sys=%d note=%d",
+			snap.SystemPromptChars, snap.ElisionNoteChars)
+	}
+}
+
 // itoa avoids pulling strconv just for tests.
 func itoa(i int) string {
 	if i == 0 {

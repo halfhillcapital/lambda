@@ -21,6 +21,33 @@ Guidelines:
 - Be terse. No preamble, no trailing summaries. The user sees your tool calls and their results.
 - When you're done with the task, stop calling tools and give a one-line answer.`
 
+// Sections holds the system prompt as discrete chunks so callers (notably
+// the /context command) can attribute token cost per chunk. Empty strings
+// mean the chunk is omitted from the final prompt.
+type Sections struct {
+	Base        string
+	Environment string
+	Project     string
+	Skills      string
+}
+
+// Joined returns the assembled system prompt: non-empty sections separated
+// by blank lines, in fixed order (base, environment, project, skills).
+func (s Sections) Joined() string {
+	var b strings.Builder
+	parts := []string{s.Base, s.Environment, s.Project, s.Skills}
+	for _, p := range parts {
+		if p == "" {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteString("\n\n")
+		}
+		b.WriteString(p)
+	}
+	return b.String()
+}
+
 // Build assembles the system prompt, embedding environment context (cwd, OS,
 // git status), any user-authored project guidance loaded from AGENTS.md /
 // CLAUDE.md, and a listing of available skills. skillIdx may be nil or empty;
@@ -28,6 +55,22 @@ Guidelines:
 // zero Loaded{} when project-context loading is disabled or no file was
 // found, in which case the project block is omitted.
 func Build(cwd string, skillIdx *skills.Index, project ProjectContext) string {
+	return BuildSections(cwd, skillIdx, project).Joined()
+}
+
+// BuildSections is Build's underlying primitive: it returns each chunk as a
+// separate field so callers can measure them individually. The environment
+// chunk includes the live git status and uname output.
+func BuildSections(cwd string, skillIdx *skills.Index, project ProjectContext) Sections {
+	return Sections{
+		Base:        basePrompt,
+		Environment: environmentBlock(cwd),
+		Project:     projectBlock(project),
+		Skills:      skillsBlock(skillIdx),
+	}
+}
+
+func environmentBlock(cwd string) string {
 	var uname, gitStatus string
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -36,8 +79,7 @@ func Build(cwd string, skillIdx *skills.Index, project ProjectContext) string {
 	wg.Wait()
 
 	var b strings.Builder
-	b.WriteString(basePrompt)
-	b.WriteString("\n\n<environment>\n")
+	b.WriteString("<environment>\n")
 	fmt.Fprintf(&b, "cwd: %s\n", cwd)
 	fmt.Fprintf(&b, "os: %s/%s\n", runtime.GOOS, runtime.GOARCH)
 	if uname != "" {
@@ -47,14 +89,6 @@ func Build(cwd string, skillIdx *skills.Index, project ProjectContext) string {
 		fmt.Fprintf(&b, "git:\n%s\n", indent(truncateLines(gitStatus, 40), "  "))
 	}
 	b.WriteString("</environment>")
-	if block := projectBlock(project); block != "" {
-		b.WriteString("\n\n")
-		b.WriteString(block)
-	}
-	if block := skillsBlock(skillIdx); block != "" {
-		b.WriteString("\n\n")
-		b.WriteString(block)
-	}
 	return b.String()
 }
 
