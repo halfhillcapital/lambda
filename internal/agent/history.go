@@ -13,6 +13,7 @@ type history struct {
 	messages         []ai.Message
 	maxContextTokens int     // soft cap on prompt tokens; <=0 disables compaction
 	charsPerToken    float64 // running calibration from server-reported prompt_tokens; 0 means no data yet
+	toolSchemaChars  int     // JSON byte size of tool schemas sent on every request; 0 when no tools
 	droppedTurns     int
 	elisionNoteIdx   int // 0 = no note inserted yet
 }
@@ -35,10 +36,11 @@ type compactStats struct {
 
 func (s compactStats) changed() bool { return s.turnsDropped != 0 || s.shrunk }
 
-func newHistory(systemPrompt string, maxContextTokens int) *history {
+func newHistory(systemPrompt string, maxContextTokens, toolSchemaChars int) *history {
 	return &history{
 		messages:         []ai.Message{ai.SystemMessage(systemPrompt)},
 		maxContextTokens: maxContextTokens,
+		toolSchemaChars:  toolSchemaChars,
 	}
 }
 
@@ -105,7 +107,10 @@ func (h *history) compactIfNeeded() compactStats {
 
 // shrinkLargestToolMessages truncates tool message bodies, largest first, until
 // the total fits the budget or nothing meaningful is left to shrink. Called
-// only after the drop loop has exhausted droppable turns.
+// only after the drop loop has exhausted droppable turns. If the per-request
+// fixed cost (system prompt + tool schemas) alone exceeds the budget, no
+// amount of message-shrinking will help; we exit when an iteration fails to
+// reduce the largest tool body, leaving the request over budget.
 func (h *history) shrinkLargestToolMessages() {
 	const minBody = 512
 	for h.estimateTokens() > h.maxContextTokens {
@@ -117,6 +122,10 @@ func (h *history) shrinkLargestToolMessages() {
 		body := m.Content
 		target := max(size/2, minBody)
 		trimmed := body[:target] + fmt.Sprintf("\n… (tool result truncated from %d to %d bytes to fit context)", len(body), target)
+		if len(trimmed) >= len(body) {
+			// Marker overhead would negate the trim; bail out.
+			return
+		}
 		h.messages[idx] = ai.ToolMessage(trimmed, m.ToolCallID)
 	}
 }
@@ -158,10 +167,12 @@ func (h *history) refreshElisionNote() {
 	h.elisionNoteIdx = insertAt
 }
 
-// totalChars returns the size of the message list as the sum of each
-// message's JSON-marshalled length. Matches the bytes actually sent to the API.
+// totalChars returns the byte size of everything sent on each request: the
+// JSON-marshalled message list plus the tool-schema payload. Tool schemas
+// are constant per session but consume real prompt-token budget on the
+// server, so they belong in the calibration target alongside messages.
 func (h *history) totalChars() int {
-	n := 0
+	n := h.toolSchemaChars
 	for _, m := range h.messages {
 		b, err := m.MarshalJSON()
 		if err != nil {

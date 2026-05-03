@@ -12,14 +12,11 @@ import (
 
 // showContext renders the /context output and appends it as transcript
 // notices. Two notices: the breakdown table and a verbatim system-prompt
-// dump. Sections are re-derived on the fly so the breakdown reflects the
-// current AGENTS.md / CLAUDE.md and live git status.
+// dump. Sections come from the cache populated at startup / last /new, so
+// the breakdown reflects what the agent actually has in history rather
+// than the current state of AGENTS.md / CLAUDE.md / git on disk.
 func (m *uiModel) showContext() {
-	var sections prompt.Sections
-	if m.rebuildSections != nil {
-		sections = m.rebuildSections()
-	}
-	breakdown, dump := renderContextCommand(m.agent.ContextSnapshot(), sections, m.registry)
+	breakdown, dump := renderContextCommand(m.agent.ContextSnapshot(), m.sections, m.registry)
 	m.transcript.AppendNotice(breakdown)
 	m.transcript.AppendNotice(dump)
 	m.refreshViewport()
@@ -27,10 +24,9 @@ func (m *uiModel) showContext() {
 
 // renderContextCommand assembles the two notices the /context command emits:
 // a token-by-token breakdown of the current context window, and a verbatim
-// dump of the rebuilt system prompt. Section sizes for the system prompt are
-// re-derived from BuildSections at call time, which can drift slightly from
-// what's literally in the agent's history (env block carries live git
-// status); the discrepancy is tolerable for a debug command.
+// dump of the system prompt. Section sizes come from the cached Sections
+// captured when the prompt was last built (startup or /new), matching what
+// the agent has in history[0]. Tool schemas are sized via Registry.SchemaChars.
 func renderContextCommand(snap agent.ContextSnapshot, sections prompt.Sections, registry tools.Registry) (breakdown, dump string) {
 	toolChars := registry.SchemaChars()
 	toolCount := len(registry)

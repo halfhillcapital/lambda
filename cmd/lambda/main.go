@@ -67,11 +67,11 @@ func run() int {
 		}
 		return prompt.BuildSections(session.Cwd(), skillIdx, pc)
 	}
-	systemPrompt := buildSections().Joined()
+	sections := buildSections()
 	registry := tools.New(session.Cwd(), skillIdx)
 
 	if p, ok := resolveOneShotPrompt(cfg); ok {
-		return runOneShot(ctx, cfg, systemPrompt, registry, p)
+		return runOneShot(ctx, cfg, sections.Joined(), registry, p)
 	}
 
 	if !term.IsTerminal(int(os.Stdout.Fd())) {
@@ -79,7 +79,7 @@ func run() int {
 		return 2
 	}
 
-	action, err := tui.Run(ctx, cfg, systemPrompt, buildSections, registry, skillIdx, session)
+	action, err := tui.Run(ctx, cfg, sections, buildSections, registry, skillIdx, session)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1

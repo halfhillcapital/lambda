@@ -87,7 +87,7 @@ func New(cfg *config.Config, systemPrompt string, registry tools.Registry, appro
 		model:           cfg.Model,
 		registry:        registry,
 		tools:           registry.Schemas(),
-		history:         newHistory(systemPrompt, cfg.MaxContextTokens),
+		history:         newHistory(systemPrompt, cfg.MaxContextTokens, registry.SchemaChars()),
 		maxSteps:        cfg.MaxSteps,
 		approver:        approver,
 		reasoningEffort: cfg.Reasoning,

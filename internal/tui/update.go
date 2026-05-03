@@ -176,7 +176,8 @@ func (m *uiModel) handleSlashCommand(text string) tea.Cmd {
 	switch result.kind {
 	case slashCommandReset:
 		if m.rebuildSections != nil {
-			m.agent.ResetWithSystemPrompt(m.rebuildSections().Joined())
+			m.sections = m.rebuildSections()
+			m.agent.ResetWithSystemPrompt(m.sections.Joined())
 		} else {
 			m.agent.Reset()
 		}

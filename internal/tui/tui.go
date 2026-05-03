@@ -29,10 +29,15 @@ type uiModel struct {
 	registry tools.Registry
 	askCh    chan confirmRequest
 	// rebuildSections re-renders the system prompt from scratch as discrete
-	// chunks, picking up edits to AGENTS.md / CLAUDE.md. Called on /new and
-	// /clear (joined back into a string) and on /context (used directly to
-	// attribute tokens per chunk).
+	// chunks, picking up edits to AGENTS.md / CLAUDE.md and a fresh git
+	// status. Called on /new and /clear (joined back into a string and fed
+	// to the agent), at which point the result is cached in `sections`.
 	rebuildSections func() prompt.Sections
+	// sections is the cached system-prompt breakdown matching the prompt
+	// the agent currently has in history[0]. Used by /context so the
+	// breakdown reflects what was actually sent rather than reshelling out
+	// to `git status` / `uname` on every invocation.
+	sections prompt.Sections
 
 	commands     slashCommandDispatcher
 	turn         *turnRunner
@@ -62,7 +67,7 @@ type uiModel struct {
 	inputRows int
 }
 
-func newUIModel(cfg *config.Config, systemPrompt string, rebuildSections func() prompt.Sections, registry tools.Registry, skillIdx *skills.Index, session *worktree.Session) (*uiModel, error) {
+func newUIModel(cfg *config.Config, sections prompt.Sections, rebuildSections func() prompt.Sections, registry tools.Registry, skillIdx *skills.Index, session *worktree.Session) (*uiModel, error) {
 	if skillIdx == nil {
 		skillIdx = skills.Empty()
 	}
@@ -73,7 +78,9 @@ func newUIModel(cfg *config.Config, systemPrompt string, rebuildSections func() 
 		askCh:           make(chan confirmRequest, 1),
 		commands:        newSlashCommandDispatcher(skillIdx),
 		rebuildSections: rebuildSections,
+		sections:        sections,
 	}
+	systemPrompt := sections.Joined()
 	m.transcript = newTranscript(func(name, rawArgs string) string {
 		return registry.Summarize(name, rawArgs)
 	})
@@ -304,8 +311,8 @@ func cropLines(s string, n int) string {
 // returns the user's keep/discard choice for the worktree session. The
 // returned action is ActionKeep when the user never reaches the quit
 // modal (e.g. clean session, or worktree disabled).
-func Run(ctx context.Context, cfg *config.Config, systemPrompt string, rebuildSections func() prompt.Sections, registry tools.Registry, skillIdx *skills.Index, session *worktree.Session) (worktree.Action, error) {
-	m, err := newUIModel(cfg, systemPrompt, rebuildSections, registry, skillIdx, session)
+func Run(ctx context.Context, cfg *config.Config, sections prompt.Sections, rebuildSections func() prompt.Sections, registry tools.Registry, skillIdx *skills.Index, session *worktree.Session) (worktree.Action, error) {
+	m, err := newUIModel(cfg, sections, rebuildSections, registry, skillIdx, session)
 	if err != nil {
 		return worktree.ActionKeep, err
 	}
