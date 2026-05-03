@@ -54,6 +54,7 @@ type uiModel struct {
 
 	approval *approvalDialog
 	quit     *quitDialog
+	merge    *mergeDialog
 	// chosenAction is read by the caller after Run returns to decide
 	// whether to keep or discard the session worktree. Defaults to
 	// ActionKeep (zero value) when the user never opens the modal.
@@ -88,6 +89,7 @@ func newUIModel(cfg *config.Config, sections prompt.Sections, rebuildSections fu
 		return registry.Preview(name, args)
 	})
 	m.quit = &quitDialog{}
+	m.merge = &mergeDialog{}
 	logger, logErr := agent.OpenDebugLog(cfg)
 	approver := agent.NewApprover(registry, m.confirmer, cfg.Yolo)
 	m.agent = agent.New(cfg, systemPrompt, registry, approver, logger)
@@ -159,6 +161,11 @@ func (m *uiModel) View() string {
 
 	if m.quit.Active() {
 		modal := m.quit.Render(m.width)
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, modal)
+	}
+
+	if m.merge.Active() {
+		modal := m.merge.Render(m.width)
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, modal)
 	}
 

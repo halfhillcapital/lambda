@@ -74,6 +74,14 @@ func TestSlashCommandDispatcher_Worktree(t *testing.T) {
 	}
 }
 
+func TestSlashCommandDispatcher_Merge(t *testing.T) {
+	dispatcher := newSlashCommandDispatcher(skills.Empty())
+	result := dispatcher.Dispatch("/merge")
+	if result.kind != slashCommandMerge {
+		t.Fatalf("kind=%v, want merge", result.kind)
+	}
+}
+
 func TestSlashCommandDispatcher_BuiltinsWinOverSkills(t *testing.T) {
 	dispatcher := newSlashCommandDispatcher(testSkillIndex(t))
 

@@ -25,6 +25,12 @@ func (m *uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case quitSummaryMsg:
 		return m, m.handleQuitSummary(msg)
 
+	case mergePreviewMsg:
+		return m, m.handleMergePreview(msg)
+
+	case mergeResultMsg:
+		return m, m.handleMergeResult(msg)
+
 	case turnEndedMsg:
 		return m, m.handleTurnEnded(msg)
 
@@ -97,6 +103,9 @@ func (m *uiModel) handleKey(msg tea.KeyMsg) tea.Cmd {
 	}
 	if m.quit.Active() {
 		return m.handleQuitKey(msg)
+	}
+	if m.merge.Active() {
+		return m.handleMergeKey(msg)
 	}
 	return m.handleGlobalKey(msg)
 }
@@ -201,6 +210,8 @@ func (m *uiModel) handleSlashCommand(text string) tea.Cmd {
 	case slashCommandShowWorktree:
 		m.showWorktree()
 		return nil
+	case slashCommandMerge:
+		return m.startMerge()
 	case slashCommandStartTurn:
 		return m.startTurn(result.startInput)
 	}

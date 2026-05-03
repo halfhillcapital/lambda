@@ -15,6 +15,7 @@ const (
 	slashCommandStartTurn
 	slashCommandShowContext
 	slashCommandShowWorktree
+	slashCommandMerge
 )
 
 type slashCommandResult struct {
@@ -59,6 +60,8 @@ func (d slashCommandDispatcher) Dispatch(text string) slashCommandResult {
 		return slashCommandResult{kind: slashCommandShowContext}
 	case "/worktree":
 		return slashCommandResult{kind: slashCommandShowWorktree}
+	case "/merge":
+		return slashCommandResult{kind: slashCommandMerge}
 	}
 	if name := strings.TrimPrefix(cmd, "/"); name != "" {
 		if _, ok := d.skills.Get(name); ok {
@@ -75,7 +78,7 @@ func (d slashCommandDispatcher) Dispatch(text string) slashCommandResult {
 }
 
 func (d slashCommandDispatcher) helpNotices() []string {
-	notices := []string{"commands: /new (or /clear) to reset, /context to inspect the current context window, /worktree to inspect session isolation, /help, Ctrl+C to cancel turn or quit, Alt+Enter (or Shift+Enter with /terminal-setup) for newline, PgUp/PgDn to scroll"}
+	notices := []string{"commands: /new (or /clear) to reset, /context to inspect the current context window, /worktree to inspect session isolation, /merge to squash session changes onto the base branch and start a fresh worktree, /help, Ctrl+C to cancel turn or quit, Alt+Enter (or Shift+Enter with /terminal-setup) for newline, PgUp/PgDn to scroll"}
 	if list := d.skills.List(); len(list) > 0 {
 		var b strings.Builder
 		b.WriteString("skills (invoke with /<name> [args]):")

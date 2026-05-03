@@ -136,6 +136,75 @@ func (d *quitDialog) Render(width int) string {
 	return modalBoxStyle.Width(maxw).Render(b.String())
 }
 
+// mergeDialog is the confirmation modal shown by /merge before any commit
+// lands on the user's base branch. It is purely presentational; the merge
+// itself is driven by handleMergeKey in update.go.
+type mergeDialog struct {
+	active  bool
+	preview worktree.MergePreview
+}
+
+type mergeDialogResult int
+
+const (
+	mergeDialogNoop mergeDialogResult = iota
+	mergeDialogConfirm
+	mergeDialogCancel
+)
+
+func (d *mergeDialog) Active() bool {
+	return d != nil && d.active
+}
+
+func (d *mergeDialog) Open(preview worktree.MergePreview) {
+	d.active = true
+	d.preview = preview
+}
+
+func (d *mergeDialog) HandleKey(key string) mergeDialogResult {
+	switch key {
+	case "y", "Y", "enter":
+		d.active = false
+		return mergeDialogConfirm
+	case "n", "N", "esc", "ctrl+c":
+		d.active = false
+		return mergeDialogCancel
+	}
+	return mergeDialogNoop
+}
+
+func (d *mergeDialog) Render(width int) string {
+	p := d.preview
+	var b strings.Builder
+	if p.NoOp {
+		fmt.Fprintf(&b, "%s\n\n", ToolCallStyle.Render("No changes to merge — start a fresh session?"))
+	} else {
+		fmt.Fprintf(&b, "%s\n\n", ToolCallStyle.Render("Squash-merge session onto "+p.BaseBranch+"?"))
+	}
+	var body strings.Builder
+	fmt.Fprintf(&body, "base:    %s @ %s\n", p.BaseBranch, p.BaseShortSHA)
+	fmt.Fprintf(&body, "branch:  %s\n", p.SessionBranch)
+	if !p.NoOp {
+		fmt.Fprintf(&body, "subject: %s", p.Subject)
+		if p.DiffStat != "" {
+			body.WriteString("\n")
+			body.WriteString(p.DiffStat)
+		}
+	}
+	b.WriteString(toolOutStyle.Render(body.String()))
+	b.WriteString("\n\n")
+	if p.NoOp {
+		b.WriteString(statusStyle.Render("[y/Enter] rotate worktree   [n/Esc] cancel"))
+	} else {
+		b.WriteString(statusStyle.Render("[y/Enter] merge & rotate   [n/Esc] cancel"))
+	}
+	maxw := width - 6
+	if maxw < 30 {
+		maxw = 30
+	}
+	return modalBoxStyle.Width(maxw).Render(b.String())
+}
+
 func renderToolPreview(lines []tools.PreviewLine) string {
 	var b strings.Builder
 	for i, line := range lines {
