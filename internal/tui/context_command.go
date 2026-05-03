@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"strings"
@@ -19,6 +20,14 @@ func (m *uiModel) showContext() {
 	breakdown, dump := renderContextCommand(m.agent.ContextSnapshot(), m.sections, m.registry)
 	m.transcript.AppendNotice(breakdown)
 	m.transcript.AppendNotice(dump)
+	m.refreshViewport()
+}
+
+// showWorktree renders the /worktree output and appends it as a transcript
+// notice. It reads live git state so users can check whether the session is
+// still clean without leaving the REPL.
+func (m *uiModel) showWorktree() {
+	m.transcript.AppendNotice(m.session.Status(context.Background()))
 	m.refreshViewport()
 }
 

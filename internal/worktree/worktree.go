@@ -25,6 +25,7 @@ type Session struct {
 	Enabled     bool
 	Path        string // absolute worktree path
 	Branch      string // branch created alongside the worktree
+	BaseBranch  string // branch/ref the session was created from
 	StartSHA    string // parent HEAD when the worktree was created
 	RepoRoot    string // parent repo toplevel
 	OriginalCwd string
@@ -58,6 +59,7 @@ func Start(ctx context.Context, cwd string, enabled bool) (*Session, error) {
 	ts := time.Now().Format("20060102-150405")
 	branch := "lambda/" + ts
 	path := filepath.Join(root, ".lambda", "worktrees", ts)
+	baseBranch := currentBranch(ctx, root)
 
 	if gitDir != "" {
 		_ = ensureExclude(filepath.Join(gitDir, "info", "exclude"))
@@ -68,6 +70,7 @@ func Start(ctx context.Context, cwd string, enabled bool) (*Session, error) {
 	s.Enabled = true
 	s.Path = path
 	s.Branch = branch
+	s.BaseBranch = baseBranch
 	s.StartSHA = sha
 	s.RepoRoot = root
 	return s, nil
@@ -115,6 +118,62 @@ func (s *Session) Summary(ctx context.Context) (string, bool) {
 		}
 	}
 	return b.String(), true
+}
+
+// Status returns a user-facing snapshot of the session worktree. Unlike
+// Summary, it always returns useful output: disabled sessions explain that
+// lambda is editing the current checkout, and clean active sessions report
+// that there are no session changes.
+func (s *Session) Status(ctx context.Context) string {
+	if s == nil || !s.Enabled {
+		return "worktree: disabled\ncwd:      " + sOriginalCwd(s)
+	}
+
+	var b strings.Builder
+	fmt.Fprintln(&b, "worktree: active")
+	fmt.Fprintf(&b, "branch:   %s\n", s.Branch)
+	if s.BaseBranch != "" {
+		fmt.Fprintf(&b, "base:     %s @ %s\n", s.BaseBranch, shortSHA(s.StartSHA))
+	} else {
+		fmt.Fprintf(&b, "base:     %s\n", shortSHA(s.StartSHA))
+	}
+	fmt.Fprintf(&b, "path:     %s\n", s.Path)
+
+	advanced := headAdvanced(ctx, s.Path, s.StartSHA)
+	dirty := isDirty(ctx, s.Path)
+	if !advanced && !dirty {
+		fmt.Fprint(&b, "changes:  none")
+		return b.String()
+	}
+	if advanced {
+		if out, err := runGitOutput(ctx, s.Path, "diff", "--stat", s.StartSHA+"..HEAD"); err == nil && len(bytes.TrimSpace(out)) > 0 {
+			writeIndented(&b, "committed:", out)
+		} else {
+			fmt.Fprintln(&b, "committed: HEAD moved")
+		}
+	}
+	if dirty {
+		if out, err := runGitOutput(ctx, s.Path, "status", "--short"); err == nil && len(bytes.TrimSpace(out)) > 0 {
+			writeIndented(&b, "uncommitted:", out)
+		} else {
+			fmt.Fprintln(&b, "uncommitted: status unavailable")
+		}
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func sOriginalCwd(s *Session) string {
+	if s == nil {
+		return ""
+	}
+	return s.OriginalCwd
+}
+
+func shortSHA(sha string) string {
+	if len(sha) > 12 {
+		return sha[:12]
+	}
+	return sha
 }
 
 // Finalize tears down or preserves the session's worktree.
@@ -220,6 +279,24 @@ func probeRepo(ctx context.Context, cwd string) (root, sha, gitDir string, ok bo
 		return "", "", "", false
 	}
 	return root, sha, gitDir, true
+}
+
+func currentBranch(ctx context.Context, cwd string) string {
+	out, err := runGitOutput(ctx, cwd, "branch", "--show-current")
+	if err == nil {
+		if branch := strings.TrimSpace(string(out)); branch != "" {
+			return branch
+		}
+	}
+	out, err = runGitOutput(ctx, cwd, "rev-parse", "--short", "HEAD")
+	if err != nil {
+		return ""
+	}
+	sha := strings.TrimSpace(string(out))
+	if sha == "" {
+		return ""
+	}
+	return "detached:" + sha
 }
 
 // isDirty reports whether cwd has any working-tree or index changes.

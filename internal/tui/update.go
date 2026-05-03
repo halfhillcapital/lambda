@@ -198,6 +198,9 @@ func (m *uiModel) handleSlashCommand(text string) tea.Cmd {
 	case slashCommandShowContext:
 		m.showContext()
 		return nil
+	case slashCommandShowWorktree:
+		m.showWorktree()
+		return nil
 	case slashCommandStartTurn:
 		return m.startTurn(result.startInput)
 	}

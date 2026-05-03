@@ -69,6 +69,9 @@ func TestStartCreatesWorktreeAndExclude(t *testing.T) {
 	if !strings.HasPrefix(s.Branch, "lambda/") {
 		t.Errorf("branch=%q, want prefix lambda/", s.Branch)
 	}
+	if s.BaseBranch != "main" {
+		t.Errorf("BaseBranch=%q, want main", s.BaseBranch)
+	}
 	// .git/info/exclude should now contain /.lambda/
 	excl, err := os.ReadFile(filepath.Join(dir, ".git", "info", "exclude"))
 	if err != nil {
@@ -299,6 +302,61 @@ func TestSummaryReturnsEmptyForDisabledSession(t *testing.T) {
 	body, hasChanges := s.Summary(context.Background())
 	if hasChanges || body != "" {
 		t.Errorf("disabled session should report no changes; got hasChanges=%v body=%q", hasChanges, body)
+	}
+}
+
+func TestStatusReportsActiveCleanSession(t *testing.T) {
+	requireGit(t)
+	dir := t.TempDir()
+	initRepoWithCommit(t, dir)
+
+	s, err := Start(context.Background(), dir, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out := s.Status(context.Background())
+	for _, want := range []string{
+		"worktree: active",
+		"branch:   " + s.Branch,
+		"base:     main @ ",
+		"path:     " + s.Path,
+		"changes:  none",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("Status missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestStatusReportsDisabledSession(t *testing.T) {
+	dir := t.TempDir()
+	s := &Session{Enabled: false, OriginalCwd: dir}
+
+	out := s.Status(context.Background())
+	for _, want := range []string{"worktree: disabled", "cwd:      " + dir} {
+		if !strings.Contains(out, want) {
+			t.Errorf("Status missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestStatusReportsDirtySession(t *testing.T) {
+	requireGit(t)
+	dir := t.TempDir()
+	initRepoWithCommit(t, dir)
+
+	s, err := Start(context.Background(), dir, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(s.Path, "new.txt"), []byte("hi"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := s.Status(context.Background())
+	if !strings.Contains(out, "uncommitted:") || !strings.Contains(out, "new.txt") {
+		t.Errorf("Status missing dirty summary:\n%s", out)
 	}
 }
 
