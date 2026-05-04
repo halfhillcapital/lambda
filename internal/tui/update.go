@@ -220,6 +220,8 @@ func (m *uiModel) handleSlashCommand(text string) tea.Cmd {
 	case slashCommandListSessions:
 		m.listSessions()
 		return nil
+	case slashCommandDiscard:
+		return m.discard(result.arg)
 	case slashCommandStartTurn:
 		return m.startTurn(result.startInput)
 	}

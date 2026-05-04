@@ -34,11 +34,7 @@ func Resume(ctx context.Context, repoRoot, cwd, prefix string) (*Session, error)
 	if repoRoot == "" {
 		return nil, errors.New("session: empty repoRoot")
 	}
-	manifests, err := List(repoRoot)
-	if err != nil {
-		return nil, err
-	}
-	m, err := matchPrefix(manifests, prefix)
+	m, err := Resolve(repoRoot, prefix)
 	if err != nil {
 		return nil, err
 	}
@@ -80,6 +76,18 @@ func Resume(ctx context.Context, repoRoot, cwd, prefix string) (*Session, error)
 		lockHeld:  true,
 	}
 	return s, nil
+}
+
+// Resolve looks up a Session by id or title prefix under repoRoot.
+// Errors with ErrSessionNotFound on no match, ErrSessionAmbiguous on
+// multiple. An empty prefix is rejected — callers must opt in
+// explicitly to which Session they want.
+func Resolve(repoRoot, prefix string) (*Manifest, error) {
+	manifests, err := List(repoRoot)
+	if err != nil {
+		return nil, err
+	}
+	return matchPrefix(manifests, prefix)
 }
 
 // matchPrefix selects the manifest whose id (or title) starts with the
