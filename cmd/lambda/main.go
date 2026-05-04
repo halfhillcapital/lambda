@@ -64,6 +64,18 @@ func run() int {
 		sess.Finalize(context.Background(), os.Stderr, chosenAction)
 	}()
 
+	// GC orphan workspace dirs left behind by crashes / interrupted
+	// /merge rotations. Skipped silently when another lambda is alive
+	// (its in-flight rotation would race with ours). Best-effort: a
+	// repair failure must not block startup.
+	if root := sess.RepoRoot(); root != "" {
+		if n, err := session.Repair(ctx, root, sess.ID()); err != nil {
+			fmt.Fprintln(os.Stderr, "lambda: repair pass:", err)
+		} else if n > 0 {
+			fmt.Fprintf(os.Stderr, "lambda: repaired %d orphan workspace dir(s)\n", n)
+		}
+	}
+
 	if ws := sess.Workspace(); ws.Enabled {
 		if err := os.Chdir(ws.Path); err != nil {
 			fmt.Fprintln(os.Stderr, "lambda: chdir to worktree failed:", err)
