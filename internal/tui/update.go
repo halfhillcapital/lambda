@@ -184,8 +184,8 @@ func (m *uiModel) handleSlashCommand(text string) tea.Cmd {
 	result := m.commands.Dispatch(text)
 	switch result.kind {
 	case slashCommandReset:
-		if m.rebuildSections != nil {
-			m.sections = m.rebuildSections()
+		if m.builders.Sections != nil && m.session != nil {
+			m.sections = m.builders.Sections(m.session)
 			m.agent.ResetWithSystemPrompt(m.sections.Joined())
 		} else {
 			m.agent.Reset()
@@ -222,12 +222,33 @@ func (m *uiModel) handleSlashCommand(text string) tea.Cmd {
 		return nil
 	case slashCommandDiscard:
 		return m.discard(result.arg)
+	case slashCommandNewSession:
+		m.startNewSession()
+		return nil
 	case slashCommandStartTurn:
 		return m.startTurn(result.startInput)
 	}
 	m.transcript.AppendError(result.err)
 	m.refreshViewport()
 	return nil
+}
+
+// startNewSession suspends the current session and swaps in a fresh
+// one in-process. Errors surface in the transcript without quitting —
+// the user can retry, /suspend manually, or just exit.
+func (m *uiModel) startNewSession() {
+	if m.turn.Active() {
+		m.transcript.AppendError("/new: cancel the current turn first (Ctrl+C), then retry")
+		m.refreshViewport()
+		return
+	}
+	if err := m.swapSession(context.Background()); err != nil {
+		m.transcript.AppendError("/new: " + err.Error())
+		m.refreshViewport()
+		return
+	}
+	m.transcript.AppendNotice("started new session " + m.session.ID())
+	m.refreshViewport()
 }
 
 // summarizeForQuit asks the worktree session for a change summary off the UI

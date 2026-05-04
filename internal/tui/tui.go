@@ -4,6 +4,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -22,6 +23,16 @@ import (
 	"lambda/internal/worktree"
 )
 
+// Builders bundles the constructors the TUI needs to (re)build per-session
+// state: sections (system prompt), registry (tool set), and a fresh
+// Session itself. They get re-invoked on /new so a successor Session
+// gets its own freshly-rooted registry and prompt.
+type Builders struct {
+	Sections   func(*session.Session) prompt.Sections
+	Registry   func(*session.Session) tools.Registry
+	NewSession func(context.Context) (*session.Session, error)
+}
+
 // --- model ---
 
 type uiModel struct {
@@ -29,12 +40,11 @@ type uiModel struct {
 	agent    *agent.Agent
 	session  *session.Session
 	registry tools.Registry
+	skillIdx *skills.Index
+	logger   *agent.Logger
+	approver *agent.Approver
+	builders Builders
 	askCh    chan confirmRequest
-	// rebuildSections re-renders the system prompt from scratch as discrete
-	// chunks, picking up edits to AGENTS.md / CLAUDE.md and a fresh git
-	// status. Called on /new and /clear (joined back into a string and fed
-	// to the agent), at which point the result is cached in `sections`.
-	rebuildSections func() prompt.Sections
 	// sections is the cached system-prompt breakdown matching the prompt
 	// the agent currently has in history[0]. Used by /context so the
 	// breakdown reflects what was actually sent rather than reshelling out
@@ -70,33 +80,33 @@ type uiModel struct {
 	inputRows int
 }
 
-func newUIModel(cfg *config.Config, sections prompt.Sections, rebuildSections func() prompt.Sections, registry tools.Registry, skillIdx *skills.Index, session *session.Session) (*uiModel, error) {
+func newUIModel(cfg *config.Config, builders Builders, skillIdx *skills.Index, sess *session.Session) (*uiModel, error) {
 	if skillIdx == nil {
 		skillIdx = skills.Empty()
 	}
 	m := &uiModel{
-		cfg:             cfg,
-		session:         session,
-		registry:        registry,
-		askCh:           make(chan confirmRequest, 1),
-		commands:        newSlashCommandDispatcher(skillIdx),
-		rebuildSections: rebuildSections,
-		sections:        sections,
+		cfg:      cfg,
+		session:  sess,
+		skillIdx: skillIdx,
+		builders: builders,
+		askCh:    make(chan confirmRequest, 1),
+		commands: newSlashCommandDispatcher(skillIdx),
+		sections: builders.Sections(sess),
+		registry: builders.Registry(sess),
 	}
-	systemPrompt := sections.Joined()
 	m.transcript = newTranscript(func(name, rawArgs string) string {
-		return registry.Summarize(name, rawArgs)
+		return m.registry.Summarize(name, rawArgs)
 	})
 	m.approval = newApprovalDialog(func(name, args string) []tools.PreviewLine {
-		return registry.Preview(name, args)
+		return m.registry.Preview(name, args)
 	})
 	m.quit = &quitDialog{}
 	m.merge = &mergeDialog{}
 	logger, logErr := agent.OpenDebugLog(cfg)
-	approver := agent.NewApprover(registry, m.confirmer, cfg.Yolo)
-	m.agent = agent.New(cfg, systemPrompt, registry, approver, logger)
-	if session != nil {
-		replay, err := session.History().Load()
+	m.logger = logger
+	m.attachAgent(m.sections.Joined())
+	if sess != nil {
+		replay, err := sess.History().Load()
 		if err != nil {
 			m.transcript.AppendNotice("history replay disabled: " + err.Error())
 		} else if len(replay) > 0 {
@@ -105,7 +115,6 @@ func newUIModel(cfg *config.Config, sections prompt.Sections, rebuildSections fu
 			m.tokenUsed, m.tokenCap = m.agent.ContextUsage()
 		}
 	}
-	m.turn = newTurnRunner(m.agent.Run)
 	if m.tokenCap == 0 {
 		m.tokenUsed, m.tokenCap = m.agent.ContextUsage()
 	}
@@ -148,6 +157,56 @@ func newUIModel(cfg *config.Config, sections prompt.Sections, rebuildSections fu
 
 func (m *uiModel) rebuildRenderer(width int) error {
 	return m.transcript.RebuildRenderer(width)
+}
+
+// attachAgent (re)builds the Agent and its turn runner against the
+// currently-attached registry and session. Shared logger is reused
+// across agents — the TUI owns its lifecycle separately. Called from
+// newUIModel and from /new (after the session/registry swap).
+func (m *uiModel) attachAgent(systemPrompt string) {
+	m.approver = agent.NewApprover(m.registry, m.confirmer, m.cfg.Yolo)
+	m.agent = agent.New(m.cfg, systemPrompt, m.registry, m.approver, m.logger)
+	m.turn = newTurnRunner(m.agent.Run)
+}
+
+// swapSession is the /new path: persist+release the current session,
+// allocate a fresh one via the configured factory, swap it in
+// in-process, and rebuild everything that's anchored to a session
+// (registry, sections, system prompt, agent). On factory failure the
+// current session stays attached and an error is surfaced.
+func (m *uiModel) swapSession(ctx context.Context) error {
+	if m.builders.NewSession == nil {
+		return fmt.Errorf("/new is not available in this mode")
+	}
+	newSess, err := m.builders.NewSession(ctx)
+	if err != nil {
+		return err
+	}
+	if m.session != nil {
+		if err := m.session.Suspend(ctx); err != nil {
+			// Don't abort: the new session is already constructed and
+			// holding the lock. Surface the suspend error as a notice
+			// rather than rolling back, which would mean discarding the
+			// fresh session we just paid to create.
+			m.transcript.AppendNotice("note: prior session suspend failed: " + err.Error())
+		}
+	}
+	m.session = newSess
+	if ws := newSess.Workspace(); ws != nil && ws.Enabled {
+		if err := os.Chdir(ws.Path); err != nil {
+			return fmt.Errorf("chdir to new workspace: %w", err)
+		}
+	}
+	m.registry = m.builders.Registry(newSess)
+	m.sections = m.builders.Sections(newSess)
+	m.attachAgent(m.sections.Joined())
+
+	m.transcript.Reset()
+	m.turnCost = 0
+	m.sessionCost = 0
+	m.stepsUsed = 0
+	m.tokenUsed, m.tokenCap = m.agent.ContextUsage()
+	return nil
 }
 
 // replayTranscript rehydrates the visible transcript from a resumed
@@ -351,12 +410,20 @@ func cropLines(s string, n int) string {
 // returns the user's keep/discard choice for the worktree session. The
 // returned action is ActionKeep when the user never reaches the quit
 // modal (e.g. clean session, or worktree disabled).
-func Run(ctx context.Context, cfg *config.Config, sections prompt.Sections, rebuildSections func() prompt.Sections, registry tools.Registry, skillIdx *skills.Index, session *session.Session) (worktree.Action, error) {
-	m, err := newUIModel(cfg, sections, rebuildSections, registry, skillIdx, session)
+func Run(ctx context.Context, cfg *config.Config, builders Builders, skillIdx *skills.Index, sess *session.Session) (worktree.Action, error) {
+	m, err := newUIModel(cfg, builders, skillIdx, sess)
 	if err != nil {
 		return worktree.ActionKeep, err
 	}
-	defer m.agent.Close()
+	defer func() {
+		// /new swaps in successor agents but never closes their loggers
+		// (the model owns the shared logger lifecycle). The current
+		// agent's Close runs first so the file handle is released
+		// exactly once, here.
+		if m.agent != nil {
+			_ = m.agent.Close()
+		}
+	}()
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	if _, err := p.Run(); err != nil {
 		return worktree.ActionKeep, err

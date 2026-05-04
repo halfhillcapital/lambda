@@ -73,18 +73,25 @@ func run() int {
 	}
 
 	skillIdx := skills.Load(skills.RootsFromEnv(sess.Cwd(), os.Getenv("LAMBDA_SKILLS_DIR")), os.Stderr)
-	buildSections := func() prompt.Sections {
+	buildSections := func(s *session.Session) prompt.Sections {
 		var pc prompt.ProjectContext
 		if !cfg.NoProjectContext {
-			pc = prompt.LoadProjectContext(sess.Cwd(), os.Stderr)
+			pc = prompt.LoadProjectContext(s.Cwd(), os.Stderr)
 		}
-		return prompt.BuildSections(sess.Cwd(), skillIdx, pc)
+		return prompt.BuildSections(s.Cwd(), skillIdx, pc)
 	}
-	sections := buildSections()
-	registry := tools.New(sess.Cwd(), skillIdx)
+	buildRegistry := func(s *session.Session) tools.Registry {
+		return tools.New(s.Cwd(), skillIdx)
+	}
+	// /new uses this factory to allocate a successor Session in-process.
+	// cwd is the original invocation cwd (not the worktree path), so the
+	// new session probes the repo from the same anchor as the first one.
+	newSession := func(c context.Context) (*session.Session, error) {
+		return session.Start(c, cwd, !cfg.NoWorktree, true, cfg.Model, string(cfg.Provider))
+	}
 
 	if p, ok := resolveOneShotPrompt(cfg); ok {
-		return runOneShot(ctx, cfg, sections.Joined(), registry, p)
+		return runOneShot(ctx, cfg, buildSections(sess).Joined(), buildRegistry(sess), p)
 	}
 
 	if !term.IsTerminal(int(os.Stdout.Fd())) {
@@ -92,7 +99,12 @@ func run() int {
 		return 2
 	}
 
-	action, err := tui.Run(ctx, cfg, sections, buildSections, registry, skillIdx, sess)
+	builders := tui.Builders{
+		Sections:   buildSections,
+		Registry:   buildRegistry,
+		NewSession: newSession,
+	}
+	action, err := tui.Run(ctx, cfg, builders, skillIdx, sess)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1

@@ -76,9 +76,9 @@ func (m *uiModel) handleMergeResult(msg mergeResultMsg) tea.Cmd {
 		m.refreshViewport()
 		return nil
 	}
-	// Same conversation reset as /new, so the next task starts clean.
-	if m.rebuildSections != nil {
-		m.sections = m.rebuildSections()
+	// Same conversation reset as /clear, so the next task starts clean.
+	if m.builders.Sections != nil && m.session != nil {
+		m.sections = m.builders.Sections(m.session)
 		m.agent.ResetWithSystemPrompt(m.sections.Joined())
 	} else {
 		m.agent.Reset()

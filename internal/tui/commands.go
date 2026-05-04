@@ -19,6 +19,7 @@ const (
 	slashCommandSuspend
 	slashCommandListSessions
 	slashCommandDiscard
+	slashCommandNewSession
 )
 
 type slashCommandResult struct {
@@ -52,11 +53,13 @@ func (d slashCommandDispatcher) Dispatch(text string) slashCommandResult {
 	cmd := fields[0]
 	args := strings.TrimSpace(strings.TrimPrefix(text, cmd))
 	switch cmd {
-	case "/new", "/clear":
+	case "/clear":
 		return slashCommandResult{
 			kind:    slashCommandReset,
-			notices: []string{"started a new conversation"},
+			notices: []string{"cleared conversation"},
 		}
+	case "/new":
+		return slashCommandResult{kind: slashCommandNewSession}
 	case "/help":
 		return slashCommandResult{
 			kind:    slashCommandHelp,
@@ -90,7 +93,7 @@ func (d slashCommandDispatcher) Dispatch(text string) slashCommandResult {
 }
 
 func (d slashCommandDispatcher) helpNotices() []string {
-	notices := []string{"commands: /new (or /clear) to reset, /context to inspect the current context window, /worktree to inspect session isolation, /merge to squash session changes onto the base branch and start a fresh worktree, /suspend to leave the session attached for later resume, /sessions to list persisted sessions, /discard [<prefix>] to drop a session and its worktree (no-arg = current, then quit), /help, Ctrl+C to cancel turn or quit, Alt+Enter (or Shift+Enter with /terminal-setup) for newline, PgUp/PgDn to scroll"}
+	notices := []string{"commands: /new to start a fresh session (suspends the current one), /clear to reset the conversation in place, /context to inspect the current context window, /worktree to inspect session isolation, /merge to squash session changes onto the base branch and start a fresh worktree, /suspend to leave the session attached for later resume, /sessions to list persisted sessions, /discard [<prefix>] to drop a session and its worktree (no-arg = current, then quit), /help, Ctrl+C to cancel turn or quit, Alt+Enter (or Shift+Enter with /terminal-setup) for newline, PgUp/PgDn to scroll"}
 	if list := d.skills.List(); len(list) > 0 {
 		var b strings.Builder
 		b.WriteString("skills (invoke with /<name> [args]):")

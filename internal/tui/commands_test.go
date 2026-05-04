@@ -12,17 +12,24 @@ import (
 	"lambda/internal/tools"
 )
 
-func TestSlashCommandDispatcher_ResetCommands(t *testing.T) {
+func TestSlashCommandDispatcher_ClearReset(t *testing.T) {
 	dispatcher := newSlashCommandDispatcher(skills.Empty())
 
-	for _, input := range []string{"/new", "/clear"} {
-		result := dispatcher.Dispatch(input)
-		if result.kind != slashCommandReset {
-			t.Fatalf("Dispatch(%q).kind=%v, want reset", input, result.kind)
-		}
-		if len(result.notices) != 1 || result.notices[0] != "started a new conversation" {
-			t.Fatalf("Dispatch(%q).notices=%q, want reset notice", input, result.notices)
-		}
+	result := dispatcher.Dispatch("/clear")
+	if result.kind != slashCommandReset {
+		t.Fatalf("Dispatch(/clear).kind=%v, want reset", result.kind)
+	}
+	if len(result.notices) != 1 || result.notices[0] != "cleared conversation" {
+		t.Fatalf("Dispatch(/clear).notices=%q, want clear notice", result.notices)
+	}
+}
+
+func TestSlashCommandDispatcher_NewIsSessionReplacement(t *testing.T) {
+	dispatcher := newSlashCommandDispatcher(skills.Empty())
+
+	result := dispatcher.Dispatch("/new")
+	if result.kind != slashCommandNewSession {
+		t.Fatalf("Dispatch(/new).kind=%v, want newSession (not reset)", result.kind)
 	}
 }
 
