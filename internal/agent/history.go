@@ -9,6 +9,11 @@ import (
 
 // history owns the chat message slice and the bookkeeping for compaction.
 // Not safe for concurrent use — Agent serializes per-turn access.
+//
+// History persistence is *not* this struct's job. The agent emits an
+// EventMessageAppended on every append; a surrounding loop (the TUI,
+// or anything else driving the agent) is responsible for mirroring
+// those to durable storage if it cares.
 type history struct {
 	messages         []ai.Message
 	maxContextTokens int     // soft cap on prompt tokens; <=0 disables compaction
@@ -42,6 +47,14 @@ func newHistory(systemPrompt string, maxContextTokens, toolSchemaChars int) *his
 		maxContextTokens: maxContextTokens,
 		toolSchemaChars:  toolSchemaChars,
 	}
+}
+
+// append extends the in-memory history. The single entry point for
+// adding to history — agent.Run and friends should never poke
+// h.messages directly. Persistence (if any) is the surrounding loop's
+// concern; the agent emits EventMessageAppended after this call.
+func (h *history) append(m ai.Message) {
+	h.messages = append(h.messages, m)
 }
 
 // reset clears history back to the original system message and forgets any

@@ -50,6 +50,9 @@ func (m *uiModel) confirmer(ctx context.Context, name, args string) agent.Decisi
 }
 
 func (m *uiModel) handleEvent(ev agent.Event) {
+	if ma, ok := ev.(agent.EventMessageAppended); ok && m.session != nil {
+		m.session.History().RecordMessage(ma.Message)
+	}
 	result := m.transcript.ApplyAgentEvent(ev)
 	if result.toolStarted {
 		m.stepsUsed++

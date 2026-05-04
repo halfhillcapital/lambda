@@ -83,6 +83,9 @@ func (m *uiModel) handleMergeResult(msg mergeResultMsg) tea.Cmd {
 	} else {
 		m.agent.Reset()
 	}
+	if m.session != nil {
+		m.session.History().RecordReset()
+	}
 	m.transcript.Reset()
 	m.turnCost = 0
 	m.sessionCost = 0

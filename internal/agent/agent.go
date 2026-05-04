@@ -39,6 +39,13 @@ type (
 	EventContextUsage  struct{ Used, Limit int }
 	EventTurnDone      struct{ Reason string }
 	EventError         struct{ Err error }
+	// EventMessageAppended fires every time a message lands in the
+	// in-memory history (user input, assistant reply, tool result,
+	// cancellation marker). Surrounding loops persist these to a
+	// session log if they care; oneshot mode ignores them. The
+	// payload is the exact message the model will see on the next
+	// request (pre-compaction).
+	EventMessageAppended struct{ Message ai.Message }
 	// EventCost reports per-call USD spend and the running session total.
 	// Emitted after each completion when the provider reports cost (>0).
 	EventCost struct {
@@ -54,9 +61,10 @@ func (EventToolStart) isEvent()     {}
 func (EventToolResult) isEvent()    {}
 func (EventToolDenied) isEvent()    {}
 func (EventContextUsage) isEvent()  {}
-func (EventTurnDone) isEvent()      {}
-func (EventError) isEvent()         {}
-func (EventCost) isEvent()          {}
+func (EventTurnDone) isEvent()        {}
+func (EventError) isEvent()           {}
+func (EventCost) isEvent()            {}
+func (EventMessageAppended) isEvent() {}
 
 // Agent is the main tool-calling loop. It is not safe for concurrent use —
 // one turn at a time per agent.
@@ -217,7 +225,7 @@ func (a *Agent) ResetWithSystemPrompt(newPrompt string) {
 // the turn finishes (successfully or otherwise).
 func (a *Agent) Run(ctx context.Context, userInput string, out chan<- Event) {
 	defer close(out)
-	a.history.messages = append(a.history.messages, ai.UserMessage(userInput))
+	a.appendMessage(ctx, ai.UserMessage(userInput), out)
 	a.emitContextUsage(ctx, out)
 	a.logger.Write("turn_start", map[string]any{"input_chars": len(userInput)})
 
@@ -238,7 +246,7 @@ func (a *Agent) Run(ctx context.Context, userInput string, out chan<- Event) {
 			}
 			return
 		}
-		a.history.messages = append(a.history.messages, assistant)
+		a.appendMessage(ctx, assistant, out)
 		a.emitContextUsage(ctx, out)
 
 		if len(assistant.ToolCalls) == 0 {
@@ -250,7 +258,7 @@ func (a *Agent) Run(ctx context.Context, userInput string, out chan<- Event) {
 				// Cancelled mid-turn. Every tool_call_id on the assistant message
 				// must have a paired tool message, or the next request 400s.
 				for _, rem := range assistant.ToolCalls[i+1:] {
-					a.history.messages = append(a.history.messages, ai.ToolMessage("cancelled by user", rem.ID))
+					a.appendMessage(ctx, ai.ToolMessage("cancelled by user", rem.ID), out)
 				}
 				a.emitContextUsage(ctx, out)
 				return
@@ -340,7 +348,7 @@ func (a *Agent) handleToolCall(ctx context.Context, tc ai.ToolCall, out chan<- E
 
 	if !a.approver.Allow(ctx, name, args) {
 		a.emit(ctx, out, EventToolDenied{ID: tc.ID, Name: name})
-		a.history.messages = append(a.history.messages, ai.ToolMessage("denied this tool call", tc.ID))
+		a.appendMessage(ctx, ai.ToolMessage("denied this tool call", tc.ID), out)
 		a.emitContextUsage(ctx, out)
 		return ctx.Err() == nil
 	}
@@ -348,7 +356,7 @@ func (a *Agent) handleToolCall(ctx context.Context, tc ai.ToolCall, out chan<- E
 	a.emit(ctx, out, EventToolStart{ID: tc.ID, Name: name, Args: args})
 	result := a.registry.Execute(ctx, name, args)
 	a.emit(ctx, out, EventToolResult{ID: tc.ID, Name: name, Result: result})
-	a.history.messages = append(a.history.messages, ai.ToolMessage(result, tc.ID))
+	a.appendMessage(ctx, ai.ToolMessage(result, tc.ID), out)
 	a.emitContextUsage(ctx, out)
 
 	return ctx.Err() == nil
@@ -371,6 +379,15 @@ func (a *Agent) compactIfNeeded(ctx context.Context, out chan<- Event) {
 		"msgs_before":      stats.msgsBefore,
 		"msgs_after":       stats.msgsAfter,
 	})
+}
+
+// appendMessage extends the in-memory history and emits an
+// EventMessageAppended so a surrounding loop can persist the message
+// if it cares. The single mutation seam — every message-add path in
+// Run / handleToolCall goes through here.
+func (a *Agent) appendMessage(ctx context.Context, m ai.Message, out chan<- Event) {
+	a.history.append(m)
+	a.emit(ctx, out, EventMessageAppended{Message: m})
 }
 
 func (a *Agent) emitContextUsage(ctx context.Context, out chan<- Event) {

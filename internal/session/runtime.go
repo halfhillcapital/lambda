@@ -19,6 +19,7 @@ type Session struct {
 	cwd       string
 	manifest  *Manifest
 	workspace *worktree.Workspace
+	history   *History
 	persisted bool
 	lockHeld  bool
 	suspended bool
@@ -59,6 +60,7 @@ func Start(ctx context.Context, cwd string, useWorktree, persist bool, model, pr
 		cwd:       cwd,
 		manifest:  m,
 		workspace: ws,
+		history:   newHistory(""), // ephemeral until we decide to persist
 	}
 
 	// Persistence is justified by resume/enumerate/suspend, none of which
@@ -72,6 +74,7 @@ func Start(ctx context.Context, cwd string, useWorktree, persist bool, model, pr
 		}
 		s.persisted = true
 		s.lockHeld = true
+		s.history = newHistory(HistoryPath(root, id))
 	}
 	return s, wsErr
 }
@@ -98,6 +101,16 @@ func (s *Session) ID() string {
 // Manifest returns the underlying manifest. Mutations through this
 // pointer must be followed by Save() to persist.
 func (s *Session) Manifest() *Manifest { return s.manifest }
+
+// History returns the Session's on-disk message log. Always non-nil
+// once a Session has been constructed; an ephemeral Session yields a
+// History whose methods are no-ops.
+func (s *Session) History() *History {
+	if s == nil {
+		return nil
+	}
+	return s.history
+}
 
 // Workspace returns the Workspace this Session currently points at.
 // Resolved fresh on every call so that rotation under /merge is visible

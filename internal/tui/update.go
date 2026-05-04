@@ -190,6 +190,9 @@ func (m *uiModel) handleSlashCommand(text string) tea.Cmd {
 		} else {
 			m.agent.Reset()
 		}
+		if m.session != nil {
+			m.session.History().RecordReset()
+		}
 		m.transcript.Reset()
 		m.turnCost = 0
 		m.sessionCost = 0

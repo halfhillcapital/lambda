@@ -75,6 +75,7 @@ func Resume(ctx context.Context, repoRoot, cwd, prefix string) (*Session, error)
 		cwd:       cwd,
 		manifest:  m,
 		workspace: ws,
+		history:   newHistory(HistoryPath(repoRoot, m.ID)),
 		persisted: true,
 		lockHeld:  true,
 	}
