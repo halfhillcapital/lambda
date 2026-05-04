@@ -55,6 +55,47 @@ func TestHistoryRecordResetTruncates(t *testing.T) {
 	}
 }
 
+func TestHistoryLoadRoundtripsAllRecords(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.jsonl")
+	h := newHistory(path)
+
+	h.RecordMessage(ai.UserMessage("first user"))
+	h.RecordMessage(ai.Message{
+		Role:    ai.RoleAssistant,
+		Content: "calling a tool",
+		ToolCalls: []ai.ToolCall{
+			{ID: "call_1", Name: "read", Arguments: `{"path":"x"}`},
+		},
+	})
+	h.RecordMessage(ai.ToolMessage("file body", "call_1"))
+	h.RecordMessage(ai.AssistantMessage("the answer"))
+
+	loaded, err := h.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(loaded) != 4 {
+		t.Fatalf("expected 4 messages, got %d: %+v", len(loaded), loaded)
+	}
+	if loaded[1].Role != ai.RoleAssistant || len(loaded[1].ToolCalls) != 1 || loaded[1].ToolCalls[0].ID != "call_1" {
+		t.Errorf("tool_calls lost on roundtrip: %+v", loaded[1])
+	}
+	if loaded[2].Role != ai.RoleTool || loaded[2].ToolCallID != "call_1" {
+		t.Errorf("tool record lost: %+v", loaded[2])
+	}
+}
+
+func TestHistoryLoadOnMissingFileReturnsNil(t *testing.T) {
+	h := newHistory(filepath.Join(t.TempDir(), "nonexistent.jsonl"))
+	loaded, err := h.Load()
+	if err != nil {
+		t.Errorf("Load on missing file: %v", err)
+	}
+	if loaded != nil {
+		t.Errorf("expected nil, got %+v", loaded)
+	}
+}
+
 func TestEphemeralHistoryDoesNotTouchDisk(t *testing.T) {
 	dir := t.TempDir()
 	h := newHistory("")

@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"lambda/internal/agent"
+	"lambda/internal/ai"
 	"lambda/internal/config"
 	"lambda/internal/prompt"
 	"lambda/internal/session"
@@ -94,8 +95,20 @@ func newUIModel(cfg *config.Config, sections prompt.Sections, rebuildSections fu
 	logger, logErr := agent.OpenDebugLog(cfg)
 	approver := agent.NewApprover(registry, m.confirmer, cfg.Yolo)
 	m.agent = agent.New(cfg, systemPrompt, registry, approver, logger)
+	if session != nil {
+		replay, err := session.History().Load()
+		if err != nil {
+			m.transcript.AppendNotice("history replay disabled: " + err.Error())
+		} else if len(replay) > 0 {
+			m.agent.LoadReplay(replay)
+			m.replayTranscript(replay)
+			m.tokenUsed, m.tokenCap = m.agent.ContextUsage()
+		}
+	}
 	m.turn = newTurnRunner(m.agent.Run)
-	m.tokenUsed, m.tokenCap = m.agent.ContextUsage()
+	if m.tokenCap == 0 {
+		m.tokenUsed, m.tokenCap = m.agent.ContextUsage()
+	}
 	if logErr != nil {
 		// Stderr is hidden by the alt-screen, so surface this in the UI.
 		m.transcript.AppendNotice("log file disabled: " + logErr.Error())
@@ -135,6 +148,25 @@ func newUIModel(cfg *config.Config, sections prompt.Sections, rebuildSections fu
 
 func (m *uiModel) rebuildRenderer(width int) error {
 	return m.transcript.RebuildRenderer(width)
+}
+
+// replayTranscript rehydrates the visible transcript from a resumed
+// session's persisted message log. Mirrors the strip rule the agent
+// applies in LoadReplay (only user + assistant text), so the user
+// sees what the model will see — pre-resume tool churn is hidden.
+func (m *uiModel) replayTranscript(messages []ai.Message) {
+	for _, msg := range messages {
+		switch msg.Role {
+		case ai.RoleUser:
+			m.transcript.AppendUser(msg.Content)
+		case ai.RoleAssistant:
+			if msg.Content == "" {
+				continue
+			}
+			m.transcript.AppendAssistant(msg.Content)
+		}
+	}
+	m.transcript.AppendNotice(fmt.Sprintf("resumed session %s", m.session.ID()))
 }
 
 func (m *uiModel) refreshViewport() {

@@ -47,6 +47,54 @@ func (h *History) Path() string {
 	return h.path
 }
 
+// Load reads every record from history.jsonl and reconstructs the
+// ai.Message list verbatim (including tool_calls and role:"tool"
+// records). Stripping for replay is the caller's concern — the
+// on-disk log keeps everything so a future --full resume flag could
+// hand the original transcript back to the model.
+//
+// Missing or empty file yields (nil, nil) — a fresh Session has no
+// log, and that's not an error.
+func (h *History) Load() ([]ai.Message, error) {
+	if h == nil || h.path == "" {
+		return nil, nil
+	}
+	f, err := os.Open(h.path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("history: open: %w", err)
+	}
+	defer f.Close()
+
+	var out []ai.Message
+	dec := json.NewDecoder(f)
+	for dec.More() {
+		var r historyRecord
+		if err := dec.Decode(&r); err != nil {
+			return nil, fmt.Errorf("history: decode: %w", err)
+		}
+		out = append(out, messageFromRecord(r))
+	}
+	return out, nil
+}
+
+func messageFromRecord(r historyRecord) ai.Message {
+	m := ai.Message{
+		Role:       r.Role,
+		Content:    r.Content,
+		ToolCallID: r.ToolCallID,
+	}
+	if len(r.ToolCalls) > 0 {
+		m.ToolCalls = make([]ai.ToolCall, len(r.ToolCalls))
+		for i, tc := range r.ToolCalls {
+			m.ToolCalls[i] = ai.ToolCall{ID: tc.ID, Name: tc.Name, Arguments: tc.Arguments}
+		}
+	}
+	return m
+}
+
 // historyRecord is the durable per-line shape written to history.jsonl.
 // Decoupled from ai.Message so we can evolve the on-disk format without
 // dragging the wire-format struct along.

@@ -201,6 +201,35 @@ func (a *Agent) Close() error {
 	return a.logger.Close()
 }
 
+// LoadReplay rebuilds the in-memory history from a previously persisted
+// transcript. Tool blocks are stripped per the resume contract
+// (.scratch/sessions-redesign/01-decisions.md §5): role:"tool" records
+// are dropped entirely, and assistant messages lose their tool_calls.
+// An assistant message left with no text after stripping is dropped
+// too — sending it would produce an empty assistant turn the server
+// would reject. No EventMessageAppended is emitted: these messages
+// were already persisted on disk, so re-recording them would
+// duplicate every line.
+//
+// Must be called before the agent's first Run; appending replay after
+// a turn has already happened mixes pre- and post-resume history in
+// an order the model won't understand.
+func (a *Agent) LoadReplay(messages []ai.Message) {
+	for _, m := range messages {
+		switch m.Role {
+		case ai.RoleUser:
+			a.history.messages = append(a.history.messages, m)
+		case ai.RoleAssistant:
+			stripped := ai.Message{Role: ai.RoleAssistant, Content: m.Content}
+			if stripped.Content == "" {
+				continue
+			}
+			a.history.messages = append(a.history.messages, stripped)
+		}
+		// role:"tool" and role:"system" are intentionally dropped.
+	}
+}
+
 // Reset clears the conversation history (keeping the original system prompt)
 // and any per-session "always allow" approvals. Used by REPL slash commands
 // like /new.

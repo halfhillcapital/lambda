@@ -74,6 +74,12 @@ func (t *transcript) AppendUser(text string) {
 	t.blocks = append(t.blocks, block{kind: blockUser, text: text, final: true})
 }
 
+// AppendAssistant adds a finalized assistant block. Used by resume
+// replay to rehydrate the visible transcript from prior turns.
+func (t *transcript) AppendAssistant(text string) {
+	t.blocks = append(t.blocks, block{kind: blockAssistant, text: text, final: true})
+}
+
 func (t *transcript) AppendNotice(text string) {
 	t.blocks = append(t.blocks, block{kind: blockNotice, text: text, final: true})
 }
