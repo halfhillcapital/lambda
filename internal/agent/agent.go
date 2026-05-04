@@ -201,6 +201,14 @@ func (a *Agent) Close() error {
 	return a.logger.Close()
 }
 
+// SetModel changes the model used for subsequent completions. The
+// agent serializes per-turn so this is safe to call between turns.
+// Calling it mid-turn is undefined — the in-flight request was
+// already dispatched with the old model.
+func (a *Agent) SetModel(model string) {
+	a.model = model
+}
+
 // LoadReplay rebuilds the in-memory history from a previously persisted
 // transcript. Tool blocks are stripped per the resume contract
 // (.scratch/sessions-redesign/01-decisions.md §5): role:"tool" records

@@ -20,6 +20,8 @@ const (
 	slashCommandListSessions
 	slashCommandDiscard
 	slashCommandNewSession
+	slashCommandTitle
+	slashCommandModel
 )
 
 type slashCommandResult struct {
@@ -77,6 +79,10 @@ func (d slashCommandDispatcher) Dispatch(text string) slashCommandResult {
 		return slashCommandResult{kind: slashCommandListSessions}
 	case "/discard":
 		return slashCommandResult{kind: slashCommandDiscard, arg: args}
+	case "/title":
+		return slashCommandResult{kind: slashCommandTitle, arg: args}
+	case "/model":
+		return slashCommandResult{kind: slashCommandModel, arg: args}
 	}
 	if name := strings.TrimPrefix(cmd, "/"); name != "" {
 		if _, ok := d.skills.Get(name); ok {
@@ -93,7 +99,7 @@ func (d slashCommandDispatcher) Dispatch(text string) slashCommandResult {
 }
 
 func (d slashCommandDispatcher) helpNotices() []string {
-	notices := []string{"commands: /new to start a fresh session (suspends the current one), /clear to reset the conversation in place, /context to inspect the current context window, /worktree to inspect session isolation, /merge to squash session changes onto the base branch and start a fresh worktree, /suspend to leave the session attached for later resume, /sessions to list persisted sessions, /discard [<prefix>] to drop a session and its worktree (no-arg = current, then quit), /help, Ctrl+C to cancel turn or quit, Alt+Enter (or Shift+Enter with /terminal-setup) for newline, PgUp/PgDn to scroll"}
+	notices := []string{"commands: /new to start a fresh session (suspends the current one), /clear to reset the conversation in place, /context to inspect the current context window, /worktree to inspect session isolation, /merge to squash session changes onto the base branch and start a fresh worktree, /suspend to leave the session attached for later resume, /sessions to list persisted sessions, /discard [<prefix>] to drop a session and its worktree (no-arg = current, then quit), /title <text> to set or change the current session's title (empty arg clears), /model <name> to switch the model for subsequent rounds, /help, Ctrl+C to cancel turn or quit, Alt+Enter (or Shift+Enter with /terminal-setup) for newline, PgUp/PgDn to scroll"}
 	if list := d.skills.List(); len(list) > 0 {
 		var b strings.Builder
 		b.WriteString("skills (invoke with /<name> [args]):")

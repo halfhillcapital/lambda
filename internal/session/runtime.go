@@ -201,6 +201,38 @@ func (s *Session) Suspended() bool {
 	return s != nil && s.suspended
 }
 
+// SetTitle updates the human-readable title on the Session's manifest
+// and persists it. An empty title clears the field. No-op for
+// ephemeral Sessions (no manifest on disk to update).
+func (s *Session) SetTitle(title string) error {
+	if s == nil || s.manifest == nil {
+		return errors.New("session: no manifest")
+	}
+	if title == "" {
+		s.manifest.Title = nil
+	} else {
+		s.manifest.Title = &title
+	}
+	if !s.persisted {
+		return nil
+	}
+	return s.manifest.Save(s.repoRoot)
+}
+
+// SetModel updates the Session manifest's recorded model and persists
+// it. The TUI also pushes the new model into the live Agent so the
+// next completion uses it. No-op disk write for ephemeral Sessions.
+func (s *Session) SetModel(model string) error {
+	if s == nil || s.manifest == nil {
+		return errors.New("session: no manifest")
+	}
+	s.manifest.Model = model
+	if !s.persisted {
+		return nil
+	}
+	return s.manifest.Save(s.repoRoot)
+}
+
 // touchActive records the wall-clock moment the Session was last
 // touched and persists it. Called after user-visible activity (round
 // completion, merge, …) so /sessions can sort by recency.

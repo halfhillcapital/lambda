@@ -40,6 +40,72 @@ func TestNewIDIsUnique(t *testing.T) {
 	}
 }
 
+func TestSetTitlePersistsToManifest(t *testing.T) {
+	root := t.TempDir()
+	id := NewID()
+	m := &Manifest{ID: id, Version: ManifestVersion, WorkspaceID: id}
+	if err := m.Save(root); err != nil {
+		t.Fatal(err)
+	}
+	s := &Session{repoRoot: root, manifest: m, persisted: true}
+
+	if err := s.SetTitle("the redesign"); err != nil {
+		t.Fatalf("SetTitle: %v", err)
+	}
+	loaded, err := Load(root, id)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.Title == nil || *loaded.Title != "the redesign" {
+		t.Errorf("title not persisted: got %v", loaded.Title)
+	}
+
+	if err := s.SetTitle(""); err != nil {
+		t.Fatalf("SetTitle clear: %v", err)
+	}
+	cleared, _ := Load(root, id)
+	if cleared.Title != nil {
+		t.Errorf("title not cleared: got %v", *cleared.Title)
+	}
+}
+
+func TestSetModelPersistsToManifest(t *testing.T) {
+	root := t.TempDir()
+	id := NewID()
+	m := &Manifest{ID: id, Version: ManifestVersion, WorkspaceID: id, Model: "old-model"}
+	if err := m.Save(root); err != nil {
+		t.Fatal(err)
+	}
+	s := &Session{repoRoot: root, manifest: m, persisted: true}
+
+	if err := s.SetModel("new-model"); err != nil {
+		t.Fatalf("SetModel: %v", err)
+	}
+	loaded, _ := Load(root, id)
+	if loaded.Model != "new-model" {
+		t.Errorf("model not persisted: got %q", loaded.Model)
+	}
+}
+
+func TestSetTitleOnEphemeralSessionIsInMemoryOnly(t *testing.T) {
+	root := t.TempDir()
+	id := NewID()
+	s := &Session{
+		repoRoot:  root,
+		manifest:  &Manifest{ID: id, Version: ManifestVersion, WorkspaceID: id},
+		persisted: false,
+	}
+	if err := s.SetTitle("ephemeral"); err != nil {
+		t.Fatalf("SetTitle: %v", err)
+	}
+	if s.Manifest().Title == nil || *s.Manifest().Title != "ephemeral" {
+		t.Errorf("in-memory title not set: %+v", s.Manifest().Title)
+	}
+	if _, err := Load(root, id); err == nil {
+		t.Errorf("ephemeral session should not have written manifest")
+	}
+}
+
 func TestManifestSaveLoadRoundtrip(t *testing.T) {
 	root := t.TempDir()
 	id := NewID()
