@@ -1,4 +1,4 @@
-package worktree
+﻿package worktree
 
 import (
 	"context"
@@ -19,7 +19,7 @@ func TestMergeSquashesAndRotates(t *testing.T) {
 	dir := t.TempDir()
 	initRepoWithCommit(t, dir)
 
-	s, err := Start(context.Background(), dir, true)
+	s, err := Start(context.Background(), dir, "", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +91,7 @@ func TestMergeNoOpRotatesBranch(t *testing.T) {
 	dir := t.TempDir()
 	initRepoWithCommit(t, dir)
 
-	s, err := Start(context.Background(), dir, true)
+	s, err := Start(context.Background(), dir, "", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +114,7 @@ func TestMergeRefusesDirtyParent(t *testing.T) {
 	dir := t.TempDir()
 	initRepoWithCommit(t, dir)
 
-	s, err := Start(context.Background(), dir, true)
+	s, err := Start(context.Background(), dir, "", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +135,7 @@ func TestMergeRefusesParentOnWrongBranch(t *testing.T) {
 	dir := t.TempDir()
 	initRepoWithCommit(t, dir)
 
-	s, err := Start(context.Background(), dir, true)
+	s, err := Start(context.Background(), dir, "", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +154,7 @@ func TestMergePreviewReportsNoOp(t *testing.T) {
 	dir := t.TempDir()
 	initRepoWithCommit(t, dir)
 
-	s, err := Start(context.Background(), dir, true)
+	s, err := Start(context.Background(), dir, "", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +171,7 @@ func TestMergePreviewReportsNoOp(t *testing.T) {
 }
 
 func TestMergeOnDisabledSessionErrors(t *testing.T) {
-	s := &Session{Enabled: false, OriginalCwd: t.TempDir()}
+	s := &Workspace{Enabled: false}
 	if _, err := s.Merge(context.Background(), ""); !errors.Is(err, ErrMergeDisabled) {
 		t.Errorf("err=%v, want ErrMergeDisabled", err)
 	}

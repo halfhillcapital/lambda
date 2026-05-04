@@ -1,6 +1,6 @@
-// Package worktree manages a per-session git worktree so the agent edits
-// and tool calls land on an isolated branch. A clean session ("nothing
-// changed") is garbage-collected silently; a dirty session leaves the
+// Package worktree manages a per-Session git Workspace so the agent edits
+// and tool calls land on an isolated branch. A clean Workspace ("nothing
+// changed") is garbage-collected silently; a dirty Workspace leaves the
 // worktree and branch in place for the user to review, merge, or discard.
 package worktree
 
@@ -17,66 +17,69 @@ import (
 	"time"
 )
 
-// Session carries the state of a single agent invocation's worktree. When
-// Enabled is false the session is a no-op: Start decided the environment
-// didn't qualify (not a git repo, no HEAD, user opted out), and End does
-// nothing.
-type Session struct {
-	Enabled     bool
-	Path        string // absolute worktree path
-	Branch      string // branch created alongside the worktree
-	BaseBranch  string // branch/ref the session was created from
-	StartSHA    string // parent HEAD when the worktree was created
-	RepoRoot    string // parent repo toplevel
-	OriginalCwd string
+// Workspace carries the git-side state of a single agent invocation: an
+// isolated worktree path, the branch on it, and the base branch and start
+// SHA it was rooted at. When Enabled is false the Workspace is a no-op:
+// New decided the environment didn't qualify (not a git repo, no HEAD,
+// user opted out), and Finalize does nothing.
+type Workspace struct {
+	Enabled    bool
+	Path       string // absolute worktree path
+	Branch     string // branch created alongside the worktree
+	BaseBranch string // branch/ref the Workspace was created from
+	StartSHA   string // parent HEAD when the worktree was created
+	RepoRoot   string // parent repo toplevel
 }
 
-// Cwd returns the working directory the caller should use. With a live
-// worktree that's the worktree path; otherwise the caller's original cwd.
-func (s *Session) Cwd() string {
-	if s.Enabled {
-		return s.Path
+// Cwd returns the working directory the caller should use when this
+// Workspace is live. A disabled Workspace returns "" — the caller (Session)
+// owns the fallback cwd.
+func (w *Workspace) Cwd() string {
+	if w.Enabled {
+		return w.Path
 	}
-	return s.OriginalCwd
+	return ""
 }
 
-// Start creates a worktree at <repo>/.lambda/worktrees/<ts> on a new branch
-// lambda/<ts> rooted at HEAD. It returns a disabled Session (no error) when
-// cwd isn't a git work tree, the repo has no HEAD, or enabled is false. A
-// non-nil error means a worktree was attempted and failed; the caller
-// should carry on with the disabled Session.
-func Start(ctx context.Context, cwd string, enabled bool) (*Session, error) {
-	s := &Session{OriginalCwd: cwd}
+// Start creates a Workspace at <repo>/.lambda/worktrees/<ts> on a new branch
+// lambda/<ts> rooted at HEAD. It returns a disabled Workspace (no error)
+// when cwd isn't a git work tree, the repo has no HEAD, or enabled is
+// false. A non-nil error means a worktree was attempted and failed; the
+// caller should carry on with the disabled Workspace.
+func Start(ctx context.Context, cwd, id string, enabled bool) (*Workspace, error) {
+	w := &Workspace{}
 	if !enabled {
-		return s, nil
+		return w, nil
 	}
 	root, sha, gitDir, ok := probeRepo(ctx, cwd)
 	if !ok {
 		// Not a git work tree, or an empty repo (no HEAD to root the worktree at).
-		return s, nil
+		return w, nil
 	}
 
-	ts := time.Now().Format("20060102-150405")
-	branch := "lambda/" + ts
-	path := filepath.Join(root, ".lambda", "worktrees", ts)
+	if id == "" {
+		id = time.Now().Format("20060102-150405")
+	}
+	branch := "lambda/" + id
+	path := filepath.Join(root, ".lambda", "worktrees", id)
 	baseBranch := currentBranch(ctx, root)
 
 	if gitDir != "" {
 		_ = ensureExclude(filepath.Join(gitDir, "info", "exclude"))
 	}
 	if err := runGit(ctx, root, "worktree", "add", "-b", branch, path); err != nil {
-		return s, fmt.Errorf("git worktree add: %w", err)
+		return w, fmt.Errorf("git worktree add: %w", err)
 	}
-	s.Enabled = true
-	s.Path = path
-	s.Branch = branch
-	s.BaseBranch = baseBranch
-	s.StartSHA = sha
-	s.RepoRoot = root
-	return s, nil
+	w.Enabled = true
+	w.Path = path
+	w.Branch = branch
+	w.BaseBranch = baseBranch
+	w.StartSHA = sha
+	w.RepoRoot = root
+	return w, nil
 }
 
-// Action selects how Finalize handles a session that has changes.
+// Action selects how Finalize handles a Workspace that has changes.
 type Action int
 
 const (
@@ -88,31 +91,31 @@ const (
 	ActionDiscard
 )
 
-// Summary returns a short body describing the session's changes (branch,
-// path, committed diff stat, uncommitted status) plus whether the session
-// has anything worth showing. A disabled session, or a session with no
-// dirty files and no advanced HEAD, returns ("", false). Intended for an
+// Summary returns a short body describing the Workspace's changes (branch,
+// path, committed diff stat, uncommitted status) plus whether it has
+// anything worth showing. A disabled Workspace, or one with no dirty
+// files and no advanced HEAD, returns ("", false). Intended for an
 // interactive prompt that asks the user keep-or-discard before quit.
-func (s *Session) Summary(ctx context.Context) (string, bool) {
-	if !s.Enabled {
+func (w *Workspace) Summary(ctx context.Context) (string, bool) {
+	if !w.Enabled {
 		return "", false
 	}
-	advanced := headAdvanced(ctx, s.Path, s.StartSHA)
-	dirty := isDirty(ctx, s.Path)
+	advanced := headAdvanced(ctx, w.Path, w.StartSHA)
+	dirty := isDirty(ctx, w.Path)
 	if !advanced && !dirty {
 		return "", false
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "branch: %s\n", s.Branch)
-	fmt.Fprintf(&b, "path:   %s", s.Path)
+	fmt.Fprintf(&b, "branch: %s\n", w.Branch)
+	fmt.Fprintf(&b, "path:   %s", w.Path)
 	if advanced {
-		if out, err := runGitOutput(ctx, s.Path, "diff", "--stat", s.StartSHA+"..HEAD"); err == nil {
+		if out, err := runGitOutput(ctx, w.Path, "diff", "--stat", w.StartSHA+"..HEAD"); err == nil {
 			b.WriteString("\n")
 			writeIndented(&b, "committed:", out)
 		}
 	}
 	if dirty {
-		if out, err := runGitOutput(ctx, s.Path, "status", "--short"); err == nil {
+		if out, err := runGitOutput(ctx, w.Path, "status", "--short"); err == nil {
 			b.WriteString("\n")
 			writeIndented(&b, "uncommitted:", out)
 		}
@@ -120,53 +123,46 @@ func (s *Session) Summary(ctx context.Context) (string, bool) {
 	return b.String(), true
 }
 
-// Status returns a user-facing snapshot of the session worktree. Unlike
-// Summary, it always returns useful output: disabled sessions explain that
-// lambda is editing the current checkout, and clean active sessions report
-// that there are no session changes.
-func (s *Session) Status(ctx context.Context) string {
-	if s == nil || !s.Enabled {
-		return "worktree: disabled\ncwd:      " + sOriginalCwd(s)
+// Status returns a user-facing snapshot of the live Workspace. A nil or
+// disabled Workspace returns "" — the caller (Session) owns the
+// disabled-mode rendering, which needs the original cwd it captured at
+// startup.
+func (w *Workspace) Status(ctx context.Context) string {
+	if w == nil || !w.Enabled {
+		return ""
 	}
 
 	var b strings.Builder
 	fmt.Fprintln(&b, "worktree: active")
-	fmt.Fprintf(&b, "branch:   %s\n", s.Branch)
-	if s.BaseBranch != "" {
-		fmt.Fprintf(&b, "base:     %s @ %s\n", s.BaseBranch, shortSHA(s.StartSHA))
+	fmt.Fprintf(&b, "branch:   %s\n", w.Branch)
+	if w.BaseBranch != "" {
+		fmt.Fprintf(&b, "base:     %s @ %s\n", w.BaseBranch, shortSHA(w.StartSHA))
 	} else {
-		fmt.Fprintf(&b, "base:     %s\n", shortSHA(s.StartSHA))
+		fmt.Fprintf(&b, "base:     %s\n", shortSHA(w.StartSHA))
 	}
-	fmt.Fprintf(&b, "path:     %s\n", s.Path)
+	fmt.Fprintf(&b, "path:     %s\n", w.Path)
 
-	advanced := headAdvanced(ctx, s.Path, s.StartSHA)
-	dirty := isDirty(ctx, s.Path)
+	advanced := headAdvanced(ctx, w.Path, w.StartSHA)
+	dirty := isDirty(ctx, w.Path)
 	if !advanced && !dirty {
 		fmt.Fprint(&b, "changes:  none")
 		return b.String()
 	}
 	if advanced {
-		if out, err := runGitOutput(ctx, s.Path, "diff", "--stat", s.StartSHA+"..HEAD"); err == nil && len(bytes.TrimSpace(out)) > 0 {
+		if out, err := runGitOutput(ctx, w.Path, "diff", "--stat", w.StartSHA+"..HEAD"); err == nil && len(bytes.TrimSpace(out)) > 0 {
 			writeIndented(&b, "committed:", out)
 		} else {
 			fmt.Fprintln(&b, "committed: HEAD moved")
 		}
 	}
 	if dirty {
-		if out, err := runGitOutput(ctx, s.Path, "status", "--short"); err == nil && len(bytes.TrimSpace(out)) > 0 {
+		if out, err := runGitOutput(ctx, w.Path, "status", "--short"); err == nil && len(bytes.TrimSpace(out)) > 0 {
 			writeIndented(&b, "uncommitted:", out)
 		} else {
 			fmt.Fprintln(&b, "uncommitted: status unavailable")
 		}
 	}
 	return strings.TrimRight(b.String(), "\n")
-}
-
-func sOriginalCwd(s *Session) string {
-	if s == nil {
-		return ""
-	}
-	return s.OriginalCwd
 }
 
 func shortSHA(sha string) string {
@@ -176,71 +172,71 @@ func shortSHA(sha string) string {
 	return sha
 }
 
-// Finalize tears down or preserves the session's worktree.
+// Finalize tears down or preserves the Workspace.
 //
-//   - Disabled session: no-op.
-//   - Clean session (no dirty files, HEAD didn't move): worktree and branch
-//     are removed and the empty .lambda/ parents cleaned up. Silent.
+//   - Disabled Workspace: no-op.
+//   - Clean Workspace (no dirty files, HEAD didn't move): worktree and
+//     branch are removed and the empty .lambda/ parents cleaned up. Silent.
 //   - Has changes + ActionDiscard: same removal as clean; w gets a one-line
 //     "discarded …" notice.
-//   - Has changes + ActionKeep: worktree and branch are kept; w gets the
+//   - Has changes + ActionKeep: worktree and branch are kept; out gets the
 //     full summary plus review/merge/discard command hints.
 //
-// Safe to call on a disabled session.
-func (s *Session) Finalize(ctx context.Context, w io.Writer, action Action) {
-	if !s.Enabled {
+// Safe to call on a disabled Workspace.
+func (w *Workspace) Finalize(ctx context.Context, out io.Writer, action Action) {
+	if !w.Enabled {
 		return
 	}
-	advanced := headAdvanced(ctx, s.Path, s.StartSHA)
-	dirty := isDirty(ctx, s.Path)
+	advanced := headAdvanced(ctx, w.Path, w.StartSHA)
+	dirty := isDirty(ctx, w.Path)
 	hasChanges := advanced || dirty
 
 	if !hasChanges {
-		s.removeWorktree(ctx)
+		w.removeWorktree(ctx)
 		return
 	}
 	if action == ActionDiscard {
-		s.removeWorktree(ctx)
-		fmt.Fprintf(w, "lambda: discarded session branch %s\n", s.Branch)
+		w.removeWorktree(ctx)
+		fmt.Fprintf(out, "lambda: discarded session branch %s\n", w.Branch)
 		return
 	}
 
-	fmt.Fprintln(w)
-	fmt.Fprintf(w, "lambda: session left changes on branch %s\n", s.Branch)
-	fmt.Fprintf(w, "  path:   %s\n", s.Path)
+	fmt.Fprintln(out)
+	fmt.Fprintf(out, "lambda: session left changes on branch %s\n", w.Branch)
+	fmt.Fprintf(out, "  path:   %s\n", w.Path)
 	if advanced {
-		if out, err := runGitOutput(ctx, s.Path, "diff", "--stat", s.StartSHA+"..HEAD"); err == nil {
-			writeIndented(w, "  committed:", out)
+		if buf, err := runGitOutput(ctx, w.Path, "diff", "--stat", w.StartSHA+"..HEAD"); err == nil {
+			writeIndented(out, "  committed:", buf)
 		}
 	}
 	if dirty {
-		if out, err := runGitOutput(ctx, s.Path, "status", "--short"); err == nil {
-			writeIndented(w, "  uncommitted:", out)
+		if buf, err := runGitOutput(ctx, w.Path, "status", "--short"); err == nil {
+			writeIndented(out, "  uncommitted:", buf)
 		}
 	}
-	fmt.Fprintf(w, "  review:  git -C %s log %s..HEAD\n", s.Path, s.StartSHA)
-	fmt.Fprintf(w, "  merge:   git merge %s\n", s.Branch)
-	fmt.Fprintf(w, "  discard: git worktree remove --force %s && git branch -D %s\n", s.Path, s.Branch)
+	fmt.Fprintf(out, "  review:  git -C %s log %s..HEAD\n", w.Path, w.StartSHA)
+	fmt.Fprintf(out, "  merge:   git merge %s\n", w.Branch)
+	fmt.Fprintf(out, "  discard: git worktree remove --force %s && git branch -D %s\n", w.Path, w.Branch)
 }
 
-// removeWorktree drops the session's worktree + branch and tries to remove
+// removeWorktree drops the Workspace's worktree + branch and tries to remove
 // the now-empty .lambda/worktrees/ and .lambda/ parents. Errors are ignored:
-// non-empty parents are expected when sibling sessions are still running,
+// non-empty parents are expected when sibling Workspaces are still running,
 // and the worktree/branch teardown is best-effort either way.
 //
 // On Windows a directory that's any process's cwd cannot be removed, so
 // if the caller is running with cwd inside the worktree (lambda itself
 // does this in main) we step out to the repo root first.
-func (s *Session) removeWorktree(ctx context.Context) {
+func (w *Workspace) removeWorktree(ctx context.Context) {
 	if cwd, err := os.Getwd(); err == nil {
-		if rel, err := filepath.Rel(s.Path, cwd); err == nil && !strings.HasPrefix(rel, "..") {
-			_ = os.Chdir(s.RepoRoot)
+		if rel, err := filepath.Rel(w.Path, cwd); err == nil && !strings.HasPrefix(rel, "..") {
+			_ = os.Chdir(w.RepoRoot)
 		}
 	}
-	_ = runGit(ctx, s.RepoRoot, "worktree", "remove", "--force", s.Path)
-	_ = runGit(ctx, s.RepoRoot, "branch", "-D", s.Branch)
-	_ = os.Remove(filepath.Join(s.RepoRoot, ".lambda", "worktrees"))
-	_ = os.Remove(filepath.Join(s.RepoRoot, ".lambda"))
+	_ = runGit(ctx, w.RepoRoot, "worktree", "remove", "--force", w.Path)
+	_ = runGit(ctx, w.RepoRoot, "branch", "-D", w.Branch)
+	_ = os.Remove(filepath.Join(w.RepoRoot, ".lambda", "worktrees"))
+	_ = os.Remove(filepath.Join(w.RepoRoot, ".lambda"))
 }
 
 func writeIndented(w io.Writer, header string, body []byte) {
@@ -300,7 +296,7 @@ func currentBranch(ctx context.Context, cwd string) string {
 }
 
 // isDirty reports whether cwd has any working-tree or index changes.
-// On probe failure we conservatively return true so End doesn't silently
+// On probe failure we conservatively return true so Finalize doesn't silently
 // delete a worktree whose state couldn't be verified.
 func isDirty(ctx context.Context, cwd string) bool {
 	out, err := runGitOutput(ctx, cwd, "status", "--porcelain")

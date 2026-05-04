@@ -1,4 +1,4 @@
-package worktree
+﻿package worktree
 
 import (
 	"bytes"
@@ -13,15 +13,15 @@ import (
 func TestStartOutsideRepoDisablesSession(t *testing.T) {
 	requireGit(t)
 	dir := t.TempDir()
-	s, err := Start(context.Background(), dir, true)
+	s, err := Start(context.Background(), dir, "", true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if s.Enabled {
 		t.Fatal("expected disabled session outside a git repo")
 	}
-	if s.Cwd() != dir {
-		t.Errorf("Cwd()=%q, want %q", s.Cwd(), dir)
+	if s.Cwd() != "" {
+		t.Errorf("disabled Cwd()=%q, want empty", s.Cwd())
 	}
 }
 
@@ -29,7 +29,7 @@ func TestStartWithFlagOffDisablesSession(t *testing.T) {
 	requireGit(t)
 	dir := t.TempDir()
 	initRepoWithCommit(t, dir)
-	s, err := Start(context.Background(), dir, false)
+	s, err := Start(context.Background(), dir, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +42,7 @@ func TestStartInEmptyRepoDisablesSession(t *testing.T) {
 	requireGit(t)
 	dir := t.TempDir()
 	runGitHelper(t, dir, "init", "-q", "-b", "main")
-	s, err := Start(context.Background(), dir, true)
+	s, err := Start(context.Background(), dir, "", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func TestStartCreatesWorktreeAndExclude(t *testing.T) {
 	dir := t.TempDir()
 	initRepoWithCommit(t, dir)
 
-	s, err := Start(context.Background(), dir, true)
+	s, err := Start(context.Background(), dir, "", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestStartCreatesWorktreeAndExclude(t *testing.T) {
 	// Second call keeps exclude idempotent (no duplicate).
 	runGitHelper(t, dir, "worktree", "remove", "--force", s.Path)
 	runGitHelper(t, dir, "branch", "-D", s.Branch)
-	_, err = Start(context.Background(), dir, true)
+	_, err = Start(context.Background(), dir, "", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func TestFinalizeCleanWorktreeIsRemovedSilently(t *testing.T) {
 	dir := t.TempDir()
 	initRepoWithCommit(t, dir)
 
-	s, err := Start(context.Background(), dir, true)
+	s, err := Start(context.Background(), dir, "", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +130,7 @@ func TestFinalizeKeepDirtyWorktreePersists(t *testing.T) {
 	dir := t.TempDir()
 	initRepoWithCommit(t, dir)
 
-	s, err := Start(context.Background(), dir, true)
+	s, err := Start(context.Background(), dir, "", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +161,7 @@ func TestFinalizeKeepWithCommittedChangesPersists(t *testing.T) {
 	dir := t.TempDir()
 	initRepoWithCommit(t, dir)
 
-	s, err := Start(context.Background(), dir, true)
+	s, err := Start(context.Background(), dir, "", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +190,7 @@ func TestFinalizeDiscardRemovesWorktreeAndBranch(t *testing.T) {
 	dir := t.TempDir()
 	initRepoWithCommit(t, dir)
 
-	s, err := Start(context.Background(), dir, true)
+	s, err := Start(context.Background(), dir, "", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,7 +226,7 @@ func TestFinalizeDiscardLeavesParentsWhenSiblingExists(t *testing.T) {
 	dir := t.TempDir()
 	initRepoWithCommit(t, dir)
 
-	s, err := Start(context.Background(), dir, true)
+	s, err := Start(context.Background(), dir, "", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,7 +252,7 @@ func TestSummaryReturnsBodyWhenChangesExist(t *testing.T) {
 	dir := t.TempDir()
 	initRepoWithCommit(t, dir)
 
-	s, err := Start(context.Background(), dir, true)
+	s, err := Start(context.Background(), dir, "", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,7 +283,7 @@ func TestSummaryReturnsEmptyForCleanSession(t *testing.T) {
 	dir := t.TempDir()
 	initRepoWithCommit(t, dir)
 
-	s, err := Start(context.Background(), dir, true)
+	s, err := Start(context.Background(), dir, "", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,7 +298,7 @@ func TestSummaryReturnsEmptyForCleanSession(t *testing.T) {
 }
 
 func TestSummaryReturnsEmptyForDisabledSession(t *testing.T) {
-	s := &Session{Enabled: false, OriginalCwd: t.TempDir()}
+	s := &Workspace{Enabled: false}
 	body, hasChanges := s.Summary(context.Background())
 	if hasChanges || body != "" {
 		t.Errorf("disabled session should report no changes; got hasChanges=%v body=%q", hasChanges, body)
@@ -310,7 +310,7 @@ func TestStatusReportsActiveCleanSession(t *testing.T) {
 	dir := t.TempDir()
 	initRepoWithCommit(t, dir)
 
-	s, err := Start(context.Background(), dir, true)
+	s, err := Start(context.Background(), dir, "", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -329,15 +329,10 @@ func TestStatusReportsActiveCleanSession(t *testing.T) {
 	}
 }
 
-func TestStatusReportsDisabledSession(t *testing.T) {
-	dir := t.TempDir()
-	s := &Session{Enabled: false, OriginalCwd: dir}
-
-	out := s.Status(context.Background())
-	for _, want := range []string{"worktree: disabled", "cwd:      " + dir} {
-		if !strings.Contains(out, want) {
-			t.Errorf("Status missing %q:\n%s", want, out)
-		}
+func TestStatusOnDisabledWorkspaceIsEmpty(t *testing.T) {
+	s := &Workspace{Enabled: false}
+	if out := s.Status(context.Background()); out != "" {
+		t.Errorf("disabled Workspace.Status should be empty, got: %q", out)
 	}
 }
 
@@ -346,7 +341,7 @@ func TestStatusReportsDirtySession(t *testing.T) {
 	dir := t.TempDir()
 	initRepoWithCommit(t, dir)
 
-	s, err := Start(context.Background(), dir, true)
+	s, err := Start(context.Background(), dir, "", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -361,7 +356,7 @@ func TestStatusReportsDirtySession(t *testing.T) {
 }
 
 func TestFinalizeOnDisabledSessionIsNoop(t *testing.T) {
-	s := &Session{Enabled: false, OriginalCwd: t.TempDir()}
+	s := &Workspace{Enabled: false}
 	var buf bytes.Buffer
 	s.Finalize(context.Background(), &buf, ActionDiscard)
 	if buf.Len() != 0 {

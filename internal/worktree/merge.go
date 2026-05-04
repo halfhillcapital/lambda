@@ -17,55 +17,55 @@ type MergePreview struct {
 	SessionBranch string
 	DiffStat      string // `git diff --stat base..session`; "" when NoOp.
 	Subject       string // proposed squash-commit subject.
-	NoOp          bool   // true when the session has no changes to merge.
+	NoOp          bool   // true when the Workspace has no changes to merge.
 }
 
 // MergeResult is what Merge returns after a successful merge + rotate.
 type MergeResult struct {
-	Subject     string
-	CommitSHA   string // squash commit that landed on BaseBranch; "" when NoOp.
-	NoOp        bool
-	OldBranch   string // pre-merge session branch name (now gone).
-	NewBranch   string // fresh session branch the worktree now sits on.
+	Subject   string
+	CommitSHA string // squash commit that landed on BaseBranch; "" when NoOp.
+	NoOp      bool
+	OldBranch string // pre-merge session branch name (now gone).
+	NewBranch string // fresh session branch the worktree now sits on.
 }
 
 var (
-	// ErrMergeDisabled means the session is not running with a worktree (e.g.
-	// not a git repo, or --no-worktree). /merge has nothing to merge.
-	ErrMergeDisabled = errors.New("worktree session is disabled")
-	// ErrMergeDetached means the session was started from a detached HEAD, so
-	// there's no branch to land the squash commit on.
-	ErrMergeDetached = errors.New("session was started from detached HEAD; no branch to merge into")
+	// ErrMergeDisabled means the Workspace is disabled (e.g. not a git repo,
+	// or --no-worktree). /merge has nothing to merge.
+	ErrMergeDisabled = errors.New("worktree is disabled")
+	// ErrMergeDetached means the Workspace was started from a detached HEAD,
+	// so there's no branch to land the squash commit on.
+	ErrMergeDetached = errors.New("workspace was started from detached HEAD; no branch to merge into")
 	// ErrMergeParentDirty means the parent repo's working tree has uncommitted
 	// changes. /merge refuses rather than risk mixing them with the squash.
 	ErrMergeParentDirty = errors.New("parent repo has uncommitted changes; commit or stash before /merge")
 	// ErrMergeParentBranch means the parent repo is checked out on a branch
-	// other than the session's recorded base.
-	ErrMergeParentBranch = errors.New("parent repo is not on the session base branch")
+	// other than the Workspace's recorded base.
+	ErrMergeParentBranch = errors.New("parent repo is not on the workspace base branch")
 )
 
 // MergePreview computes (without mutating anything) what a subsequent Merge
 // call would do. Errors flag preconditions the user must fix first.
-func (s *Session) MergePreview(ctx context.Context) (MergePreview, error) {
-	if s == nil || !s.Enabled {
+func (w *Workspace) MergePreview(ctx context.Context) (MergePreview, error) {
+	if w == nil || !w.Enabled {
 		return MergePreview{}, ErrMergeDisabled
 	}
-	if s.BaseBranch == "" || strings.HasPrefix(s.BaseBranch, "detached:") {
+	if w.BaseBranch == "" || strings.HasPrefix(w.BaseBranch, "detached:") {
 		return MergePreview{}, ErrMergeDetached
 	}
-	if err := s.checkParentReady(ctx); err != nil {
+	if err := w.checkParentReady(ctx); err != nil {
 		return MergePreview{}, err
 	}
 
-	advanced := headAdvanced(ctx, s.Path, s.StartSHA)
-	dirty := isDirty(ctx, s.Path)
+	advanced := headAdvanced(ctx, w.Path, w.StartSHA)
+	dirty := isDirty(ctx, w.Path)
 	hasChanges := advanced || dirty
 
 	preview := MergePreview{
-		BaseBranch:    s.BaseBranch,
-		BaseShortSHA:  shortSHA(s.StartSHA),
-		SessionBranch: s.Branch,
-		Subject:       defaultSubject(s.Branch),
+		BaseBranch:    w.BaseBranch,
+		BaseShortSHA:  shortSHA(w.StartSHA),
+		SessionBranch: w.Branch,
+		Subject:       defaultSubject(w.Branch),
 		NoOp:          !hasChanges,
 	}
 	if !hasChanges {
@@ -74,80 +74,81 @@ func (s *Session) MergePreview(ctx context.Context) (MergePreview, error) {
 	// Diff stat covers committed changes; uncommitted edits won't appear here
 	// but Merge auto-commits them before the squash.
 	if advanced {
-		if out, err := runGitOutput(ctx, s.Path, "diff", "--stat", s.StartSHA+"..HEAD"); err == nil {
+		if out, err := runGitOutput(ctx, w.Path, "diff", "--stat", w.StartSHA+"..HEAD"); err == nil {
 			preview.DiffStat = strings.TrimRight(string(out), "\n")
 		}
 	}
 	return preview, nil
 }
 
-// Merge squash-merges the session's changes onto BaseBranch in the parent repo
-// using the given subject as the commit message, then rotates the worktree's
-// branch to a fresh `lambda/<ts>` rooted at the just-merged tip. The worktree
-// path is reused (avoids invalidating the agent's tools registry / cwd).
+// Merge squash-merges the Workspace's changes onto BaseBranch in the parent
+// repo using the given subject as the commit message, then rotates the
+// Workspace's branch to a fresh `lambda/<ts>` rooted at the just-merged tip.
+// The worktree path is reused (avoids invalidating the agent's tools
+// registry / cwd).
 //
 // On any error before the squash commit lands, no destructive work has been
 // done and the caller can retry. After the commit lands we still attempt the
 // rotation; rotation failures are reported but the merge is preserved.
-func (s *Session) Merge(ctx context.Context, subject string) (MergeResult, error) {
-	if s == nil || !s.Enabled {
+func (w *Workspace) Merge(ctx context.Context, subject string) (MergeResult, error) {
+	if w == nil || !w.Enabled {
 		return MergeResult{}, ErrMergeDisabled
 	}
-	if s.BaseBranch == "" || strings.HasPrefix(s.BaseBranch, "detached:") {
+	if w.BaseBranch == "" || strings.HasPrefix(w.BaseBranch, "detached:") {
 		return MergeResult{}, ErrMergeDetached
 	}
-	if err := s.checkParentReady(ctx); err != nil {
+	if err := w.checkParentReady(ctx); err != nil {
 		return MergeResult{}, err
 	}
 	if subject == "" {
-		subject = defaultSubject(s.Branch)
+		subject = defaultSubject(w.Branch)
 	}
 
-	advanced := headAdvanced(ctx, s.Path, s.StartSHA)
-	dirty := isDirty(ctx, s.Path)
+	advanced := headAdvanced(ctx, w.Path, w.StartSHA)
+	dirty := isDirty(ctx, w.Path)
 	if !advanced && !dirty {
 		// Nothing to merge — caller should still rotate. We rotate here so
 		// callers don't need to think about the no-op path separately.
-		newBranch, err := s.rotateBranch(ctx)
+		newBranch, err := w.rotateBranch(ctx)
 		if err != nil {
 			return MergeResult{}, fmt.Errorf("rotate branch: %w", err)
 		}
 		return MergeResult{
 			Subject:   subject,
 			NoOp:      true,
-			OldBranch: s.Branch, // rotateBranch already updated s.Branch
+			OldBranch: w.Branch, // rotateBranch already updated w.Branch
 			NewBranch: newBranch,
 		}, nil
 	}
 
 	// Auto-commit any uncommitted edits so the squash picks them up.
 	if dirty {
-		if err := runGit(ctx, s.Path, "add", "-A"); err != nil {
+		if err := runGit(ctx, w.Path, "add", "-A"); err != nil {
 			return MergeResult{}, fmt.Errorf("git add (auto-commit pending): %w", err)
 		}
-		if err := runGit(ctx, s.Path, "commit", "-q", "-m", "lambda: pending changes"); err != nil {
+		if err := runGit(ctx, w.Path, "commit", "-q", "-m", "lambda: pending changes"); err != nil {
 			return MergeResult{}, fmt.Errorf("git commit (auto-commit pending): %w", err)
 		}
 	}
 
-	oldBranch := s.Branch
-	if err := runGit(ctx, s.RepoRoot, "merge", "--squash", oldBranch); err != nil {
+	oldBranch := w.Branch
+	if err := runGit(ctx, w.RepoRoot, "merge", "--squash", oldBranch); err != nil {
 		// Best-effort cleanup of any partial squash state so the parent repo
 		// isn't left with a half-applied index.
-		_ = runGit(ctx, s.RepoRoot, "merge", "--abort")
-		_ = runGit(ctx, s.RepoRoot, "reset", "--hard", "HEAD")
+		_ = runGit(ctx, w.RepoRoot, "merge", "--abort")
+		_ = runGit(ctx, w.RepoRoot, "reset", "--hard", "HEAD")
 		return MergeResult{}, fmt.Errorf("git merge --squash: %w", err)
 	}
-	if err := runGit(ctx, s.RepoRoot, "commit", "-q", "-m", subject); err != nil {
-		_ = runGit(ctx, s.RepoRoot, "reset", "--hard", "HEAD")
+	if err := runGit(ctx, w.RepoRoot, "commit", "-q", "-m", subject); err != nil {
+		_ = runGit(ctx, w.RepoRoot, "reset", "--hard", "HEAD")
 		return MergeResult{}, fmt.Errorf("git commit: %w", err)
 	}
 	commitSHA := ""
-	if out, err := runGitOutput(ctx, s.RepoRoot, "rev-parse", "HEAD"); err == nil {
+	if out, err := runGitOutput(ctx, w.RepoRoot, "rev-parse", "HEAD"); err == nil {
 		commitSHA = strings.TrimSpace(string(out))
 	}
 
-	newBranch, rotErr := s.rotateBranch(ctx)
+	newBranch, rotErr := w.rotateBranch(ctx)
 	result := MergeResult{
 		Subject:   subject,
 		CommitSHA: commitSHA,
@@ -163,27 +164,27 @@ func (s *Session) Merge(ctx context.Context, subject string) (MergeResult, error
 // rotateBranch resets the worktree branch to BaseBranch's current tip and
 // renames it to a fresh `lambda/<ts>`. The worktree path stays the same so
 // downstream callers (tools registry, agent cwd) keep working. On success
-// it updates s.Branch and s.StartSHA in place.
-func (s *Session) rotateBranch(ctx context.Context) (string, error) {
-	tip, err := runGitOutput(ctx, s.RepoRoot, "rev-parse", s.BaseBranch)
+// it updates w.Branch and w.StartSHA in place.
+func (w *Workspace) rotateBranch(ctx context.Context) (string, error) {
+	tip, err := runGitOutput(ctx, w.RepoRoot, "rev-parse", w.BaseBranch)
 	if err != nil {
-		return "", fmt.Errorf("rev-parse %s: %w", s.BaseBranch, err)
+		return "", fmt.Errorf("rev-parse %s: %w", w.BaseBranch, err)
 	}
 	tipSHA := strings.TrimSpace(string(tip))
 
 	// Reset the worktree's checkout to the new base tip. Using --hard discards
 	// the auto-commit we made earlier; the changes are already on BaseBranch
 	// via the squash, so the original session branch is now redundant.
-	if err := runGit(ctx, s.Path, "reset", "--hard", tipSHA); err != nil {
+	if err := runGit(ctx, w.Path, "reset", "--hard", tipSHA); err != nil {
 		return "", fmt.Errorf("reset --hard: %w", err)
 	}
 
-	newBranch := freshBranchName(s.Branch)
-	if err := runGit(ctx, s.RepoRoot, "branch", "-m", s.Branch, newBranch); err != nil {
+	newBranch := freshBranchName(w.Branch)
+	if err := runGit(ctx, w.RepoRoot, "branch", "-m", w.Branch, newBranch); err != nil {
 		return "", fmt.Errorf("branch -m: %w", err)
 	}
-	s.Branch = newBranch
-	s.StartSHA = tipSHA
+	w.Branch = newBranch
+	w.StartSHA = tipSHA
 	return newBranch, nil
 }
 
@@ -204,12 +205,12 @@ func freshBranchName(previous string) string {
 
 // checkParentReady verifies the parent repo is on BaseBranch and clean.
 // Returns ErrMergeParentBranch / ErrMergeParentDirty otherwise.
-func (s *Session) checkParentReady(ctx context.Context) error {
-	cur := currentBranch(ctx, s.RepoRoot)
-	if cur != s.BaseBranch {
-		return fmt.Errorf("%w: parent on %q, session base is %q", ErrMergeParentBranch, cur, s.BaseBranch)
+func (w *Workspace) checkParentReady(ctx context.Context) error {
+	cur := currentBranch(ctx, w.RepoRoot)
+	if cur != w.BaseBranch {
+		return fmt.Errorf("%w: parent on %q, workspace base is %q", ErrMergeParentBranch, cur, w.BaseBranch)
 	}
-	if isDirty(ctx, s.RepoRoot) {
+	if isDirty(ctx, w.RepoRoot) {
 		return ErrMergeParentDirty
 	}
 	return nil

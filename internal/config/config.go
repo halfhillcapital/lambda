@@ -26,6 +26,7 @@ type Config struct {
 	NoProjectContext bool
 	Debug            bool   // when true, append a JSONL debug log to debug.jsonl in the cwd
 	Prompt           string // -p one-shot prompt
+	Resume           string // --resume <prefix>: reattach to a previously persisted Session
 	Args             []string
 
 	// Reasoning is the configured per-request reasoning effort. The agent
@@ -94,6 +95,7 @@ Examples:
 	fs.BoolVar(&c.Debug, "debug", false, "append JSONL debug records to debug.jsonl in the working directory")
 	fs.StringVar(&c.Prompt, "p", "", "one-shot prompt (alias for --prompt)")
 	fs.StringVar(&c.Prompt, "prompt", "", "one-shot prompt")
+	fs.StringVar(&c.Resume, "resume", "", "resume a persisted session by id or title prefix")
 	fs.StringVar(&reasoningStr, "reasoning", "", `reasoning effort: "off" (default), "low", "medium", or "high"`)
 	fs.BoolVar(&c.DenyDataCollection, "no-data-collection", false, "openrouter: only route to providers that don't log/train on prompts")
 	fs.BoolVar(&c.NoFallbacks, "no-fallbacks", false, "openrouter: fail rather than silently route to a fallback provider")

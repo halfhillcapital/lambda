@@ -212,6 +212,11 @@ func (m *uiModel) handleSlashCommand(text string) tea.Cmd {
 		return nil
 	case slashCommandMerge:
 		return m.startMerge()
+	case slashCommandSuspend:
+		return m.suspend()
+	case slashCommandListSessions:
+		m.listSessions()
+		return nil
 	case slashCommandStartTurn:
 		return m.startTurn(result.startInput)
 	}
@@ -224,9 +229,9 @@ func (m *uiModel) handleSlashCommand(text string) tea.Cmd {
 // thread and posts a quitSummaryMsg with the result. Update handles the
 // message: no changes → quit immediately; changes → open the quit modal.
 func (m *uiModel) summarizeForQuit() tea.Cmd {
-	session := m.session
+	ws := m.session.Workspace()
 	return func() tea.Msg {
-		body, hasChanges := session.Summary(context.Background())
+		body, hasChanges := ws.Summary(context.Background())
 		return quitSummaryMsg{body: body, hasChanges: hasChanges}
 	}
 }

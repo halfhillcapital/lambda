@@ -33,9 +33,9 @@ func (m *uiModel) startMerge() tea.Cmd {
 		m.refreshViewport()
 		return nil
 	}
-	session := m.session
+	ws := m.session.Workspace()
 	return func() tea.Msg {
-		preview, err := session.MergePreview(context.Background())
+		preview, err := ws.MergePreview(context.Background())
 		return mergePreviewMsg{preview: preview, err: err}
 	}
 }
@@ -55,10 +55,10 @@ func (m *uiModel) handleMergeKey(msg tea.KeyMsg) tea.Cmd {
 	switch m.merge.HandleKey(msg.String()) {
 	case mergeDialogConfirm:
 		preview := m.merge.preview
-		session := m.session
+		ws := m.session.Workspace()
 		subject := preview.Subject
 		return func() tea.Msg {
-			result, err := session.Merge(context.Background(), subject)
+			result, err := ws.Merge(context.Background(), subject)
 			return mergeResultMsg{result: result, err: err}
 		}
 	case mergeDialogCancel:

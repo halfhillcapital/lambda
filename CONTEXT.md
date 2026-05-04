@@ -31,6 +31,14 @@ _Avoid_: Reasoning mode, thinking strategy.
 **Cost**:
 Per-call USD spend, read from `usage.cost` on responses that carry it (currently OpenRouter only). Zero when the provider doesn't report it; lambda does not compute cost from a price table.
 
+**Session**:
+The conversation-side unit of an agent run: identity, history, context cache, lifecycle status. A Session points at a Workspace but isn't one — the conversation can outlive a given workspace (e.g. `/merge` rotates the workspace under the same session) and a workspace can outlive its conversation (suspend, resume later).
+_Avoid_: Run, agent run, worktree (that's the Workspace).
+
+**Workspace**:
+The git-side unit of an agent run: an isolated worktree path, the branch created on it, the base branch and start SHA it was rooted at. Today's `worktree.Session` type — to be renamed. A Workspace is referenced by at most one active Session at a time.
+_Avoid_: Worktree (overloaded with the git primitive), sandbox, checkout.
+
 **Project context**:
 User-authored guidance loaded from `AGENTS.md` (or `CLAUDE.md` as a fallback) and spliced into the system prompt. Discovered by walking up from cwd to the first `.git` ancestor. Disabled with `--no-project-context`. Distinct from skills (markdown packs loaded on demand) and from the `<environment>` block (cwd, OS, git status — derived, not authored).
 _Avoid_: Memory, instructions, rules.
@@ -41,3 +49,4 @@ _Avoid_: Memory, instructions, rules.
 - Each **Turn** is one call to a **Completer**.
 - The **Reasoning policy** decides per-**Turn** whether to send the configured **Reasoning effort**.
 - A **Provider** value selects request shaping and which API-key env var is read.
+- A **Session** owns a sequence of **Rounds** and references one **Workspace** at a time.

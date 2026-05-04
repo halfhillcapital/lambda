@@ -15,6 +15,7 @@ import (
 	"lambda/internal/agent"
 	"lambda/internal/config"
 	"lambda/internal/prompt"
+	"lambda/internal/session"
 	"lambda/internal/skills"
 	"lambda/internal/tools"
 	"lambda/internal/worktree"
@@ -25,7 +26,7 @@ import (
 type uiModel struct {
 	cfg      *config.Config
 	agent    *agent.Agent
-	session  *worktree.Session
+	session  *session.Session
 	registry tools.Registry
 	askCh    chan confirmRequest
 	// rebuildSections re-renders the system prompt from scratch as discrete
@@ -68,7 +69,7 @@ type uiModel struct {
 	inputRows int
 }
 
-func newUIModel(cfg *config.Config, sections prompt.Sections, rebuildSections func() prompt.Sections, registry tools.Registry, skillIdx *skills.Index, session *worktree.Session) (*uiModel, error) {
+func newUIModel(cfg *config.Config, sections prompt.Sections, rebuildSections func() prompt.Sections, registry tools.Registry, skillIdx *skills.Index, session *session.Session) (*uiModel, error) {
 	if skillIdx == nil {
 		skillIdx = skills.Empty()
 	}
@@ -318,7 +319,7 @@ func cropLines(s string, n int) string {
 // returns the user's keep/discard choice for the worktree session. The
 // returned action is ActionKeep when the user never reaches the quit
 // modal (e.g. clean session, or worktree disabled).
-func Run(ctx context.Context, cfg *config.Config, sections prompt.Sections, rebuildSections func() prompt.Sections, registry tools.Registry, skillIdx *skills.Index, session *worktree.Session) (worktree.Action, error) {
+func Run(ctx context.Context, cfg *config.Config, sections prompt.Sections, rebuildSections func() prompt.Sections, registry tools.Registry, skillIdx *skills.Index, session *session.Session) (worktree.Action, error) {
 	m, err := newUIModel(cfg, sections, rebuildSections, registry, skillIdx, session)
 	if err != nil {
 		return worktree.ActionKeep, err
